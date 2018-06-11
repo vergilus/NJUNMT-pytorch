@@ -20,6 +20,31 @@ if torch.cuda.is_available():
     torch.cuda.manual_seed_all(GlobalNames.SEED)
 
 
+def split_shard(*inputs, shard_size=-1):
+
+    def _chunk(seq, n):
+
+        for i in range(0, len(seq), n):
+            yield seq[i:i+n]
+
+    if shard_size < 0:
+        yield inputs
+    else:
+
+        lengths = [len(s) for s in inputs[-1]] #
+        sorted_indices = np.argsort(lengths).tolist()
+
+        # sorting inputs
+
+        inputs = [
+            [inp[ii] for ii in sorted_indices]
+            for inp in inputs
+        ]
+
+        input_shards = [_chunk(inp, shard_size) for inp in inputs]
+        for inps in zip(*input_shards):
+            yield inps
+
 def prepare_data(seqs_x, seqs_y=None, cuda=False, batch_first=True):
     """
     Args:
@@ -358,13 +383,13 @@ def train(FLAGS):
 
     training_iterator = DataIterator(dataset=train_bitext_dataset,
                                      batch_size=training_configs['batch_size'],
-                                     sort_buffer=training_configs['use_bucket'],
+                                     use_bucket=training_configs['use_bucket'],
                                      buffer_size=training_configs['buffer_size'],
-                                     sort_fn=lambda line: len(line[-1]))
+                                     batching_key=training_configs['batching_key'])
 
     valid_iterator = DataIterator(dataset=valid_bitext_dataset,
                                   batch_size=training_configs['valid_batch_size'],
-                                  sort_buffer=False)
+                                  use_bucket=False)
 
     bleu_scorer = ExternalScriptBLEUScorer(reference_path=data_configs['bleu_valid_reference'],
                                            lang=data_configs['lang_pair'].split('-')[1],
@@ -520,18 +545,21 @@ def train(FLAGS):
 
             training_progress_bar.update(batch_size_t)
 
-            # Prepare data
-            x, y = prepare_data(seqs_x, seqs_y, cuda=GlobalNames.USE_GPU)
-
             # optim.zero_grad()
             nmt_model.zero_grad()
-            loss = compute_forward(model=nmt_model,
-                                   critic=critic,
-                                   seqs_x=x,
-                                   seqs_y=y,
-                                   eval=False,
-                                   normalization=batch_size_t,
-                                   shard_size=training_configs['shard_size'])
+
+            for seqs_x_t, seqs_y_t in split_shard(seqs_x, seqs_y, shard_size=training_configs['update_cycle']):
+
+                # Prepare data
+                x, y = prepare_data(seqs_x_t, seqs_y_t, cuda=GlobalNames.USE_GPU)
+
+                loss = compute_forward(model=nmt_model,
+                                       critic=critic,
+                                       seqs_x=x,
+                                       seqs_y=y,
+                                       eval=False,
+                                       normalization=batch_size_t,
+                                       shard_size=-1)
             optim.step()
 
             # ================================================================================== #
