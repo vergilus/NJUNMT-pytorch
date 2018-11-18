@@ -1,23 +1,17 @@
 language: python
 python: "3.6"
 
-# whitelist
-branches:
-  only:
-    - master
-
-before_install:
-  - pip install http://download.pytorch.org/whl/cpu/torch-0.4.0-cp36-cp36m-linux_x86_64.whl
-  - pip install tqdm
-  - pip install pyyaml
-  - pip install tensorboardX
+matrix:
+  include:
+    - env: TORCH_VER="0.4.1"
+    - env: TORCH_VER="0.4.0"
 
 sudo: false
 
-install: true
+install: bash ./.travis/install.sh
 
 before_script:
-  - cp ./unittest/run_all_test.py .
+  - cp ./unittests/run_all_test.sh .
 
 script:
-  - python run_all_test.py
+  - bash run_all_test.sh

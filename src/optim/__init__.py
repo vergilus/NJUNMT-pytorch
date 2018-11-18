@@ -1,29 +1,31 @@
 # -*- coding: utf-8 -*-
-import torch.optim
-from src.utils.adafactor import Adafactor
-from torch.nn.utils.clip_grad import clip_grad_norm_
 
 # Setup optimizer (should always come after model.cuda())
 # iterable of dicts for per-param options where each dict
 # is {'params' : [p1, p2, p3...]}.update(generic optimizer args)
 # Example:
 # optim.SGD([
-        # {'params': model.base.parameters()},
-        # {'params': model.classifier.parameters(), 'lr': 1e-3}
-    # ], lr=1e-2, momentum=0.9)
+# {'params': model.base.parameters()},
+# {'params': model.classifier.parameters(), 'lr': 1e-3}
+# ], lr=1e-2, momentum=0.9)
+import torch.optim
+from torch.nn.utils.clip_grad import clip_grad_norm_
+from .adamw import AdamW
+from .adafactor import Adafactor
 
 
 class Optimizer(object):
     # Class dict to map lowercase identifiers to actual classes
     methods = {
-        'adadelta':   torch.optim.Adadelta,
-        'adagrad':    torch.optim.Adagrad,
-        'adam':       torch.optim.Adam,
-        'sgd':        torch.optim.SGD,
-        'asgd':       torch.optim.ASGD,
-        'rprop':      torch.optim.Rprop,
-        'rmsprop':    torch.optim.RMSprop,
-        'adafactor':  Adafactor
+        'adadelta': torch.optim.Adadelta,
+        'adagrad': torch.optim.Adagrad,
+        'adam': torch.optim.Adam,
+        'sgd': torch.optim.SGD,
+        'asgd': torch.optim.ASGD,
+        'rprop': torch.optim.Rprop,
+        'rmsprop': torch.optim.RMSprop,
+        "adamw": AdamW,
+        "adafactor": Adafactor
     }
 
     @staticmethod
@@ -53,8 +55,6 @@ class Optimizer(object):
 
         self._count = 0
 
-        # TODO:
-        # pass external optimizer configs
         if optim_args is None:
             optim_args = {}
 
@@ -63,7 +63,6 @@ class Optimizer(object):
         # If an explicit lr given, pass it to torch optimizer
         if self.init_lr > 0:
             self.optim_args['lr'] = self.init_lr
-
 
         # Get all parameters that require grads
         self.named_params = self.get_params(self.model)
@@ -135,3 +134,11 @@ class Optimizer(object):
         s = "Optimizer => {} (lr: {}, weight_decay: {}, g_clip: {})".format(
             self.name, self.init_lr, self.weight_decay, self.gclip)
         return s
+
+    def state_dict(self):
+
+        return self.optim.state_dict()
+
+    def load_state_dict(self, state_dict):
+
+        self.optim.load_state_dict(state_dict=state_dict)

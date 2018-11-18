@@ -1,8 +1,8 @@
-import sys
+import os
+import torch
 import time
 import contextlib
-import pickle as pkl
-import json
+import copy
 import numpy as np
 
 from . import nest
@@ -12,11 +12,12 @@ __all__ = [
     'GlobalNames',
     'Timer',
     'Collections',
-    'Vocab',
-    'sequence_mask',
     'build_vocab_shortlist',
-    'to_gpu'
+    'to_gpu',
+    'should_trigger_by_steps',
+    'Saver'
 ]
+
 
 # ================================================================================== #
 # File I/O Utils
@@ -41,9 +42,7 @@ class GlobalNames:
 
     MY_CHECKPOINIS_PREFIX = ".ckpt"
 
-    MY_BEST_MODEL_SUFFIX = ".best.tpz"
-
-    MY_BEST_OPTIMIZER_PARAMS_SUFFIX = ".best_optim.tpz"
+    MY_BEST_MODEL_SUFFIX = ".best"
 
     MY_COLLECTIONS_SUFFIX = ".collections.pkl"
 
@@ -55,6 +54,7 @@ class GlobalNames:
 
 
 time_format = '%Y-%m-%d %H:%M:%S'
+
 
 class Timer(object):
     def __init__(self):
@@ -77,8 +77,8 @@ class Timer(object):
         h, m = divmod(m, 60)
         return '%d:%02d:%02d' % (h, m, s)
 
-class Collections(object):
 
+class Collections(object):
     """Collections for logs during training.
 
     Usually we add loss and valid metrics to some collections after some steps.
@@ -92,13 +92,6 @@ class Collections(object):
         if name is None:
             name = Collections._MY_COLLECTIONS_NAME
         self._name = name
-
-    def load(self, archives):
-
-        if self._name in archives:
-            self._kv_stores = archives[self._name]
-        else:
-            self._kv_stores = []
 
     def add_to_collection(self, key, value):
         """
@@ -114,10 +107,7 @@ class Collections(object):
         else:
             self._kv_stores[key].append(value)
 
-    def export(self):
-        return {self._name: self._kv_stores}
-
-    def get_collection(self, key):
+    def get_collection(self, key, default=[]):
         """
         Get the collection given a key
 
@@ -125,104 +115,20 @@ class Collections(object):
         :param key: Key of the collection
         """
         if key not in self._kv_stores:
-            return []
+            return default
         else:
             return self._kv_stores[key]
-    @staticmethod
-    def pickle(path, **kwargs):
-        """
-        :type path: str
-        """
-        archives_ = dict([(k,v) for k,v in kwargs.items()])
 
-        if not path.endswith(".pkl"):
-            path = path + ".pkl"
+    def state_dict(self):
 
-        with open(path, 'wb') as f:
-            pkl.dump(archives_, f)
+        return self._kv_stores
 
-    @staticmethod
-    def unpickle(path):
-        """:type path: str"""
+    def load_state_dict(self, state_dict):
 
-        with open(path, 'rb') as f:
-            archives_ = pkl.load(f)
+        self._kv_stores = copy.deepcopy(state_dict)
 
-        return archives_
-
-class Vocab(object):
-
-    PAD = 0
-    EOS = 1
-    UNK = 3
-    BOS = 2
-
-    def __init__(self, dict_path, max_n_words=-1):
-
-        with open(dict_path) as f:
-            _dict = json.load(f)
-
-        # Word to word index and word frequence.
-        self._token2id_feq = self._init_dict()
-
-        N = len(self._token2id_feq)
-
-        for ww, vv in _dict.items():
-            if isinstance(vv, int):
-                self._token2id_feq[ww] = (vv + N, 0)
-            else:
-                self._token2id_feq[ww] = (vv[0] + N, vv[1])
-
-        self._id2token = dict([(ii[0], ww) for ww, ii in self._token2id_feq.items()])
-
-        self._max_n_words = max_n_words
-
-    @property
-    def max_n_words(self):
-
-        if self._max_n_words == -1:
-            return len(self._token2id_feq)
-        else:
-            return self._max_n_words
-
-    def _init_dict(self):
-
-        return {
-            "<PAD>": (Vocab.PAD, 0),
-            "<UNK>": (Vocab.UNK, 0),
-            "<EOS>": (Vocab.EOS, 0),
-            "<BOS>": (Vocab.BOS, 0)
-                }
-
-    def token2id(self, word):
-
-        if word in self._token2id_feq and self._token2id_feq[word][0] < self.max_n_words:
-
-            return self._token2id_feq[word][0]
-        else:
-            return Vocab.UNK
-
-    def id2token(self, id):
-
-        return self._id2token[id]
-
-    @staticmethod
-    def special_ids():
-
-        return [0, 1, 2]
-
-def sequence_mask(seqs_length):
-
-    maxlen = np.max(seqs_length)
-
-    row_vector = np.arange(maxlen)
-
-    mask = row_vector[None,:] < np.expand_dims(seqs_length, -1)
-
-    return mask.astype('float32')
 
 def build_vocab_shortlist(shortlist):
-
     shortlist_ = nest.flatten(shortlist)
 
     shortlist_ = sorted(list(set(shortlist_)))
@@ -234,6 +140,125 @@ def build_vocab_shortlist(shortlist):
 
     return shortlist_np, map_to_shortlist, map_from_shortlist
 
-def to_gpu(*inputs):
 
+def to_gpu(*inputs):
     return list(map(lambda x: x.cuda(), inputs))
+
+
+def _min_cond_to_trigger(global_step, n_epoch, min_step=-1):
+    """
+    If min_step is an integer within (0,10]
+
+    global_step is the minimum number of epochs to trigger action.
+    Otherwise it is the minimum number of steps.
+    """
+    if min_step > 0 and min_step <= 50:
+        if n_epoch >= min_step:
+            return True
+        else:
+            return False
+    else:
+        if global_step >= min_step:
+            return True
+        else:
+            return False
+
+
+def should_trigger_by_steps(global_step,
+                            n_epoch,
+                            every_n_step,
+                            min_step=-1,
+                            debug=False):
+    """
+    When to trigger bleu evaluation.
+    """
+    # Debug mode
+
+    if debug:
+        return True
+
+    # Not setting condition
+
+    if every_n_step <= 0:
+        return False
+
+    if _min_cond_to_trigger(global_step=global_step, n_epoch=n_epoch, min_step=min_step):
+
+        if np.mod(global_step, every_n_step) == 0:
+            return True
+        else:
+            return False
+
+
+class Saver(object):
+    """ Saver to save and restore objects.
+
+    Saver only accept objects which contain two method: ```state_dict``` and ```load_state_dict```
+    """
+
+    def __init__(self, save_prefix, num_max_keeping=1):
+
+        self.save_prefix = save_prefix.rstrip(".")
+
+        save_dir = os.path.dirname(self.save_prefix)
+
+        if not os.path.exists(save_dir):
+            os.mkdir(save_dir)
+
+        self.save_dir = save_dir
+
+        if os.path.exists(self.save_prefix):
+            with open(self.save_prefix) as f:
+                save_list = f.readlines()
+            save_list = [line.strip() for line in save_list]
+        else:
+            save_list = []
+
+        self.save_list = save_list
+        self.num_max_keeping = num_max_keeping
+
+    @staticmethod
+    def savable(obj):
+
+        if hasattr(obj, "state_dict") and hasattr(obj, "load_state_dict"):
+            return True
+        else:
+            return False
+
+    def save(self, global_step, **kwargs):
+
+        state_dict = dict()
+
+        for key, obj in kwargs.items():
+            if self.savable(obj):
+                state_dict[key] = obj.state_dict()
+
+        saveto_path = '{0}.{1}'.format(self.save_prefix, global_step)
+        torch.save(state_dict, saveto_path)
+
+        self.save_list.append(os.path.basename(saveto_path))
+
+        if len(self.save_list) > self.num_max_keeping:
+            out_of_date_state_dict = self.save_list.pop(0)
+            os.remove(os.path.join(self.save_dir, out_of_date_state_dict))
+
+        with open(self.save_prefix, "w") as f:
+            f.write("\n".join(self.save_list))
+
+    def load_latest(self, **kwargs):
+
+        if len(self.save_list) == 0:
+            return
+
+        latest_path = os.path.join(self.save_dir, self.save_list[-1])
+
+        state_dict = torch.load(latest_path)
+
+        for name, obj in kwargs.items():
+            if self.savable(obj):
+
+                if name not in state_dict:
+                    print("Warning: {0} has no content saved!".format(name))
+                else:
+                    print("Loading {0}".format(name))
+                    obj.load_state_dict(state_dict[name])
