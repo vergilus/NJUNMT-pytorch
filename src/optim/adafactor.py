@@ -165,7 +165,7 @@ class Adafactor(Optimizer):
                 # beta2 decay if there's any
                 if group['decay_type'] == "pow":
                     beta2 = 1.0 - state["step"] ** (- group["memory_exponent"])
-                elif group['decay_type'] == "pow":
+                elif group['decay_type'] == "adam":
                     beta2 = beta2 * (1.0 - beta2 ** (state['step'] + 1)) / (1.0 - beta2 ** state['step'])
 
                 scale_correction = grad_squared_mean * 1e-30  # hack from tf.adafactor

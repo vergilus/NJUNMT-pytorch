@@ -1,5 +1,5 @@
 from collections import OrderedDict
-
+from math import sqrt
 
 class LearningRateScheduler(object):
     """ The base class of learning rate scheduler
@@ -118,3 +118,22 @@ class ReduceOnPlateauScheduler(LearningRateScheduler):
                 new_lr = old_lr * self.scale
                 self._state["bad_count"] = 0
                 return new_lr
+
+class RsqrtScheduler(LearningRateScheduler):
+     def __init__(self, optimizer, d_model, warmup_steps=4000, min_lr=-1.0):
+         """
+         Args:
+           optimizer: An instance of ```optim.Optimizer```
+           schedule_freq: The interval the scheduler should be triggered. Default is 1
+           min_lr: The minimum learning rate
+           d_model: Int. The dimension of the model.
+           warmup_steps: Int. The scheduler can not be triggered within these steps.
+         """
+         super(RsqrtScheduler,self).__init__(optimizer, min_lr)
+         self.d_model = d_model
+         self.warmup_steps = warmup_steps
+
+     def update_lr(self, old_lr, global_step, **kwargs):
+         origin_lr = self.optimizer.init_lr
+         new_lr = origin_lr * max(global_step, self.warmup_steps)**(-0.5)
+         return new_lr
