@@ -1,4 +1,5 @@
 from .bpe import Bpe
+import sentencepiece
 
 
 class _Tokenizer(object):
@@ -59,6 +60,26 @@ class BPETokenizer(_Tokenizer):
         return ' '.join(tokens).replace("@@ ", "")
 
 
+class SPMTokenizer(_Tokenizer):
+    def __init__(self, codes=None, **kwargs):
+        """sentencepiece encoder: required a regulation model (unigram-language model)
+
+        :param codes: model file
+        :param kwargs:
+        """
+        super(SPMTokenizer, self).__init__(**kwargs)
+        assert codes is not None, "model for sentencepiece must be provided!"
+        self.spm = sentencepiece.SentencePieceProcessor()
+        print(codes)
+        self.spm.load(codes)
+
+    def tokenize(self, sent):
+        return self.spm.encode_as_pieces(sent)
+
+    def detokenize(self, tokens):
+        return ' '.join(tokens).replace("▁", "")
+
+
 class Tokenizer(object):
 
     def __new__(cls, type, **kwargs):
@@ -66,6 +87,8 @@ class Tokenizer(object):
             return WordTokenizer(**kwargs)
         elif type == "bpe":
             return BPETokenizer(**kwargs)
+        elif type == "spm":
+            return SPMTokenizer(**kwargs)
         else:
             print("Unknown tokenizer type {0}".format(type))
             raise ValueError
