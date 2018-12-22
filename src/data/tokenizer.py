@@ -77,7 +77,7 @@ class SPMTokenizer(_Tokenizer):
         return self.spm.encode_as_pieces(sent)
 
     def detokenize(self, tokens):
-        return ' '.join(tokens).replace("▁", "")
+        return ''.join(tokens).replace("▁", " ")
 
 
 class Tokenizer(object):
