@@ -3,34 +3,37 @@
 # email: whr94621@gmail.com
 
 """
-Build dictionary from corpus.
+Build dictionary from tokenized corpus.
 
 output: word X word_freq, descent ordered by word frequency
 """
-import argparse
 import json
 import os
+from collections import OrderedDict
+import argparse
 import sys
 import time
-from collections import OrderedDict
 
+EOS = 0
+UNK = 1
+BOW = 2
+EOW = 3
 
 def INFO(string):
     time_format = '%Y-%m-%d %H:%M:%S'
     sys.stderr.write('{0}: {1}\n'.format(time.strftime(time_format), string))
 
-
 def create_parser():
     parser = argparse.ArgumentParser()
-    parser.add_argument('--file', type=str)
-    parser.add_argument('--num', type=int, default=0, help="Number of words to keep.")
+    parser.add_argument('--file',type=str)
+    parser.add_argument('--num',type=int, default=0, help="Number of words to keep.")
     parser.add_argument('--freq', type=int, default=0, help="Least frequency to keep")
     parser.add_argument('--char', action='store_true', default=False, help="Split words into characters.")
     parser.add_argument('--verbose', type=int, default=100000)
     return parser
 
-
 def main(filename, num, freq, char, verbose):
+
     assert num * freq == 0, 'Choose only one between -N and -F'
 
     # print 'Processing', filename
@@ -48,7 +51,7 @@ def main(filename, num, freq, char, verbose):
                     word_freqs[w] = 0
                 word_freqs[w] += 1
 
-            if verbose > 0 and (i + 1) % verbose == 0:
+            if verbose > 0  and (i + 1) % verbose == 0:
                 INFO('Parsed {0} lines'.format(i + 1))
 
     INFO('Generate vocabulary...')
@@ -57,7 +60,7 @@ def main(filename, num, freq, char, verbose):
 
     if num != 0 and freq == 0:
         word_freqs = word_freqs[:num - 2]
-    elif num == 0 and freq != 0:
+    elif num ==0 and freq != 0:
         word_freqs = [(w, f) for w, f in word_freqs if f >= freq]
     else:
         INFO('Keep all the tokens!')
@@ -78,7 +81,6 @@ def main(filename, num, freq, char, verbose):
         json.dump(worddict, f, indent=1)
 
     print('Done')
-
 
 if __name__ == '__main__':
     parser = create_parser()

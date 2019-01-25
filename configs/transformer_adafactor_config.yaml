@@ -35,7 +35,7 @@ model_configs:
 
 optimizer_configs:
   optimizer: "adafactor"
-  learning_rate: 1.0
+  learning_rate: 0.2
   grad_clip: -1.0
   optimizer_params: ~
   schedule_method: rsqrt
@@ -52,7 +52,7 @@ training_configs:
   batching_key: "tokens"
   update_cycle: 4
   valid_batch_size: 20
-  disp_freq: 500
+  disp_freq: 1000
   save_freq: 1000
   num_kept_checkpoints: 1
   loss_valid_freq: 1000

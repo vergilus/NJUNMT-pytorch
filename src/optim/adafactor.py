@@ -168,9 +168,9 @@ class Adafactor(Optimizer):
                 elif group['decay_type'] == "adam":
                     beta2 = beta2 * (1.0 - beta2 ** (state['step'] + 1)) / (1.0 - beta2 ** state['step'])
 
-                scale_correction = grad_squared_mean * 1e-30  # hack from tf.adafactor
-                update_scale += scale_correction
-                beta2 += scale_correction
+                # scale_correction = grad_squared_mean * 1e-30  # hack from tf.adafactor
+                # update_scale += scale_correction
+                # beta2 += scale_correction
 
                 if len(grad.shape) >= 2:
                     # factored along the last 2 dimensions

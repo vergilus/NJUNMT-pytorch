@@ -32,6 +32,7 @@ NJUNMT-pytorch是一个开源的神经机器翻译工具包。这个工具包主
 - tqdm
 - tensorboardX
 - sacrebleu
+- sentencepiece
 
 ## 使用说明
 

@@ -81,41 +81,31 @@ class NMTCriterion(Criterion):
         return one_hot
 
     def _bottle(self, v):
-        return v.view(-1, v.size(2))
+        return v.view(-1, v.size(-1))
 
     def _compute_loss(self, inputs, labels, **kwargs):
-
         """
         Args:
             inputs (..., K): Expect logarithm probabilities.
             labels (...,): Index tensor. Should be the same size as inputs except the last dimension.
         """
-
         batch_size = labels.size(0)
-
         scores = self._bottle(inputs)  # [batch_size * seq_len, d_words]
-
         num_tokens = scores.size(-1)
-
         gtruth = labels.view(-1)
-
         if self.confidence < 1:
             # N: the number of samples
             # M: the number of labels
             tdata = gtruth.detach()
-
             mask = torch.nonzero(tdata.eq(self.padding_idx)).squeeze()  # mask of PAD
-
             one_hot = self._smooth_label(num_tokens)  # Do label smoothing
             if labels.is_cuda:
                 one_hot = one_hot.cuda()
             tmp_ = one_hot.repeat(gtruth.size(0), 1)  # [N, M]
             tmp_.scatter_(1, tdata.unsqueeze(1), self.confidence)
-
             if mask.numel() > 0:
                 tmp_.index_fill_(0, mask, 0)
             gtruth = tmp_.detach()
-
         loss = self.criterion(scores, gtruth).view((batch_size, -1)).sum(-1)
-
         return loss
+

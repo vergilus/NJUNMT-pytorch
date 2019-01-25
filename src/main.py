@@ -17,7 +17,7 @@ from src.metric.bleu_scorer import SacreBLEUScorer
 from src.models import build_model
 from src.modules.criterions import NMTCriterion
 from src.optim import Optimizer
-from src.optim.lr_scheduler import ReduceOnPlateauScheduler, NoamScheduler
+from src.optim.lr_scheduler import ReduceOnPlateauScheduler, NoamScheduler, RsqrtScheduler
 from src.utils.common_utils import *
 from src.utils.configs import default_configs, pretty_configs
 from src.utils.logging import *
@@ -465,6 +465,8 @@ def train(FLAGS):
 
         elif optimizer_configs['schedule_method'] == "noam":
             scheduler = NoamScheduler(optimizer=optim, **optimizer_configs['scheduler_configs'])
+        elif optimizer_configs["schedule_method"] == "rsqrt":
+            scheduler = RsqrtScheduler(optimizer=optim, **optimizer_configs["scheduler_configs"])
         else:
             WARN("Unknown scheduler name {0}. Do not use lr_scheduling.".format(optimizer_configs['schedule_method']))
             scheduler = None
@@ -571,7 +573,7 @@ def train(FLAGS):
                 lrate = list(optim.get_lrate())[0]
 
                 summary_writer.add_scalar("Speed(words/sec)", scalar_value=words_per_sec, global_step=uidx)
-                summary_writer.add_scalar("Speed(sents/sen)", scalar_value=sents_per_sec, global_step=uidx)
+                summary_writer.add_scalar("Speed(sents/sec)", scalar_value=sents_per_sec, global_step=uidx)
                 summary_writer.add_scalar("lrate", scalar_value=lrate, global_step=uidx)
                 summary_writer.add_scalar("oom_count", scalar_value=oom_count, global_step=uidx)
 

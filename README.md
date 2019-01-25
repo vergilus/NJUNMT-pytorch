@@ -36,6 +36,7 @@ mechanism.
 - tqdm
 - tensorboardX
 - sacrebleu
+- sentencepiece
 
 ## Usage
 
@@ -63,7 +64,11 @@ See how to use this script by running:
 python ./scripts/build_dictionary.py --help
 ```
 We highly recommend not to set the limitation of the number of
-words and control it by config files while training.
+words and control it by config files while training
+- ```bpe``` bpe is entirely relied on Rico sennrich's implementation, more details for bpe vocabulary generation, visit [subword-nmt](https://github.com/rsennrich/subword-nmt)
+- ```spm``` spm is entirely relied on [google sentencepiece](https://github.com/google/sentencepiece) project, Sentencepiece regularization is larged affected by data size it's trained on
+
+
 
 ### 2. Write Configuration File
 

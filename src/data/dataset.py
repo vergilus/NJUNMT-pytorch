@@ -163,7 +163,7 @@ class TextLineDataset(Dataset):
         super(TextLineDataset, self).__init__()
 
         self._data_path = data_path
-        self._vocab = vocabulary # type: Vocabulary
+        self._vocab = vocabulary  # type: Vocabulary
         self._max_len = max_len
         self.shuffle = shuffle
 
@@ -230,3 +230,4 @@ class ZipDataset(Dataset):
             return None
         else:
             return zip_records(*records)
+

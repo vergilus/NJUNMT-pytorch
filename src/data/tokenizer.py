@@ -70,11 +70,15 @@ class SPMTokenizer(_Tokenizer):
         super(SPMTokenizer, self).__init__(**kwargs)
         assert codes is not None, "model for sentencepiece must be provided!"
         self.spm = sentencepiece.SentencePieceProcessor()
-        print(codes)
+        print(codes)  # model directories
         self.spm.load(codes)
 
     def tokenize(self, sent):
         return self.spm.encode_as_pieces(sent)
+
+    # def tokenize(self, sent):
+    #     # best-64 sampling with times-0.1 sharpening
+    #     return self.spm.SampleEncodeAsPieces(sent, 64, 0.1)
 
     def detokenize(self, tokens):
         return ''.join(tokens).replace("▁", " ")
