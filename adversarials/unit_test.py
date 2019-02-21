@@ -1,4 +1,5 @@
 from adversarials.discriminator import TransDiscriminator
+from adversarials.attacker import Attacker
 from adversarials.adversarial_utils import *
 from src.data.dataset import ZipDataset, TextLineDataset
 from src.data.data_iterator import DataIterator
@@ -6,7 +7,6 @@ from src.utils.common_utils import Saver, Collections, should_trigger_by_steps
 from src.utils.logging import *
 from src.optim import *
 from src.optim.lr_scheduler import *
-from src.modules.criterions import NMTCriterion
 from tensorboardX import SummaryWriter
 import numpy as np
 
@@ -14,24 +14,32 @@ BOS = Vocabulary.BOS
 EOS = Vocabulary.EOS
 PAD = Vocabulary.PAD
 
-models_path = [
-    "/home/public_data/nmtdata/nmt-baselines/transformer-wmt15-enfr-bpe32k/small_baseline/baseline_enfr_save/transformer.best.final",
-    "/home/zouw/NJUNMT-pytorch/scripts/save_zhen_bpe/transformer.best.final"]
 configs_path = [
-    "/home/public_data/nmtdata/nmt-baselines/transformer-wmt15-enfr-bpe32k/small_baseline/transformer_wmt15_en2fr.yaml",
+    "/home/public_data/nmtdata/nmt-baselines/transformer-wmt15-enfr/small_baseline/transformer_wmt15_en2fr.yaml",
     "/home/zouw/NJUNMT-pytorch/configs/transformer_nist_zh2en_bpe.yaml",
+    "/home/zouw/pycharm_project_NMT_torch/configs/wmt_en2fr_attack.yaml",
     "/home/zouw/pycharm_project_NMT_torch/configs/nist_zh2en_attack.yaml"]
+
+
+def load_embedding(model, model_path, device):
+    pretrained_params = torch.load(model_path, map_location=device)
+    model.src_embedding.embeddings.load_state_dict(
+        {"weight": pretrained_params["encoder.embeddings.embeddings.weight"]},
+        strict=True)
+    if model.trg_embedding:
+        model.trg_embedding.embeddings.load_state_dict(
+            {"weight": pretrained_params["decoder.embeddings.embeddings.weight"]},
+            strict=True)
+        INFO("load embedding from NMT model")
+    return
 
 
 def prepare_D_data(w2p, w2vocab, victim_config, seqs_x, seqs_y, use_gpu=False, batch_first=True):
     """
     Returns: return batched x,y tuples for training.
     """
-
     def _np_pad_batch_2D(samples, pad, batch_first=True, cuda=True):
-
         batch_size = len(samples)
-
         sizes = [len(s) for s in samples]
         max_size = max(sizes)
 
@@ -112,17 +120,22 @@ def acc_validation(uidx, discriminator_model, valid_iterator,
 
 def test_discriminator(config_path,
                        save_to,
-                       victim_model_path,
-                       victim_config_path,
                        model_name="Discriminator",
                        shuffle=True,
                        use_gpu=True):
     with open(config_path.strip()) as f:
         configs = yaml.load(f)
-    data_configs = configs["data_configs"]
-    model_configs = configs["model_configs"]
-    optim_configs = configs["optimizer_configs"]
+    attack_configs = configs["attack_configs"]
+    discriminator_model_configs = configs["discriminator_model_configs"]
+    discriminator_optim_configs = configs["discriminator_optimizer_configs"]
     training_configs = configs["training_configs"]
+
+    victim_config_path = attack_configs["victim_configs"]
+    victim_model_path = attack_configs["victim_model"]
+    with open(victim_config_path.strip()) as v_f:
+        print("open victim configs...%s" % victim_config_path)
+        victim_configs = yaml.load(v_f)
+    data_configs = victim_configs["data_configs"]
 
     # building inputs
     vocab_src = Vocabulary(**data_configs["vocabularies"][0])
@@ -147,8 +160,8 @@ def test_discriminator(config_path,
         shuffle=shuffle
     )
 
-    train_batch_size = training_configs["batch_size"] * max(1, training_configs["update_cycle"])
-    train_buffer_size = training_configs["buffer_size"] * max(1, training_configs["update_cycle"])
+    train_batch_size = training_configs["batch_size"]
+    train_buffer_size = training_configs["buffer_size"]
     training_iterator = DataIterator(dataset=train_bitext_dataset,
                                      batch_size=train_batch_size,
                                      use_bucket=training_configs['use_bucket'],
@@ -164,14 +177,12 @@ def test_discriminator(config_path,
     checkpoint_saver = Saver(save_prefix="{0}.ckpt".format(os.path.join(save_to, model_name)),
                              num_max_keeping=training_configs['num_kept_checkpoints']
                              )
-    best_model_saver = Saver(save_prefix=best_model_prefix, num_max_keeping=training_configs['num_kept_best_model'])
-
     # building model
     model_D = TransDiscriminator(n_src_words=vocab_src.max_n_words,
-                                 n_trg_words=vocab_trg.max_n_words, **model_configs)
+                                 n_trg_words=vocab_trg.max_n_words, **discriminator_model_configs)
     if use_gpu:
         model_D = model_D.cuda()
-        CURRENT_DEVICE = "cuda:0"
+        CURRENT_DEVICE = "cuda"
     else:
         CURRENT_DEVICE = "cpu"
     # load embedding from trained NMT models
@@ -181,24 +192,24 @@ def test_discriminator(config_path,
     # classification need label smoothing to trigger Negative log likelihood loss
     criterion = nn.CrossEntropyLoss()
     # building optimizer
-    optim = Optimizer(name=optim_configs["optimizer"],
+    optim = Optimizer(name=discriminator_optim_configs["optimizer"],
                       model=model_D,
-                      lr=optim_configs["learning_rate"],
-                      grad_clip=optim_configs["grad_clip"],
-                      optim_args=optim_configs["optimizer_params"])
+                      lr=discriminator_optim_configs["learning_rate"],
+                      grad_clip=discriminator_optim_configs["grad_clip"],
+                      optim_args=discriminator_optim_configs["optimizer_params"])
     # Build scheduler for optimizer if needed
-    if optim_configs['schedule_method'] is not None:
-        if optim_configs['schedule_method'] == "loss":
+    if discriminator_optim_configs['schedule_method'] is not None:
+        if discriminator_optim_configs['schedule_method'] == "loss":
             scheduler = ReduceOnPlateauScheduler(optimizer=optim,
-                                                 **optim_configs["scheduler_configs"]
+                                                 **discriminator_optim_configs["scheduler_configs"]
                                                  )
 
-        elif optim_configs['schedule_method'] == "noam":
-            scheduler = NoamScheduler(optimizer=optim, **optim_configs['scheduler_configs'])
-        elif optim_configs["schedule_method"] == "rsqrt":
-            scheduler = RsqrtScheduler(optimizer=optim, **optim_configs["scheduler_configs"])
+        elif discriminator_optim_configs['schedule_method'] == "noam":
+            scheduler = NoamScheduler(optimizer=optim, **discriminator_optim_configs['scheduler_configs'])
+        elif discriminator_optim_configs["schedule_method"] == "rsqrt":
+            scheduler = RsqrtScheduler(optimizer=optim, **discriminator_optim_configs["scheduler_configs"])
         else:
-            WARN("Unknown scheduler name {0}. Do not use lr_scheduling.".format(optim_configs['schedule_method']))
+            WARN("Unknown scheduler name {0}. Do not use lr_scheduling.".format(discriminator_optim_configs['schedule_method']))
             scheduler = None
     else:
         scheduler = None
@@ -210,19 +221,19 @@ def test_discriminator(config_path,
     # prepare training
     eidx = model_collections.get_collection("eidx", [0])[-1]
     uidx = model_collections.get_collection("uidx", [0])[-1]
-    bad_count = model_collections.get_collection("bad_count", [0])[-1]
     oom_count = model_collections.get_collection("oom_count", [0])[-1]
-    summary_writer = SummaryWriter(log_dir=save_to + model_name + "log")
+    summary_writer = SummaryWriter(log_dir=save_to + "log")
     w2p, w2vocab = load_or_extract_near_vocab(config_path=victim_config_path,
                                               model_path=victim_model_path,
-                                              save_to="similar_vocab",
-                                              save_to_full="full_similar_vocab",
+                                              init_perturb_rate=attack_configs["init_perturb_rate"],
+                                              save_to=os.path.join(save_to, "near_vocab"),
+                                              save_to_full=os.path.join(save_to, "full_near_vocab"),
                                               top_reserve=12)
     while True:  # infinite loop for training epoch
         training_iter = training_iterator.build_generator()
         for batch in training_iter:
             uidx += 1
-            if optim_configs["schedule_method"] is not None and optim_configs["schedule_method"] != "loss":
+            if discriminator_optim_configs["schedule_method"] is not None and discriminator_optim_configs["schedule_method"] != "loss":
                 scheduler.step(global_step=uidx)
             # training session
             seqs_x, seqs_y = batch  # returned tensor type of the data
@@ -281,24 +292,91 @@ def test_discriminator(config_path,
                 summary_writer.add_scalar("accuracy", scalar_value=acc, global_step=uidx)
 
         eidx += 1
-
     pass
 
 
-def load_embedding(model_D, model_path, device):
-    pretrained_params = torch.load(model_path, map_location=device)
-    model_D.src_embedding.embeddings.load_state_dict(
-        {"weight": pretrained_params["encoder.embeddings.embeddings.weight"]},
-        strict=True)
-    model_D.trg_embedding.embeddings.load_state_dict(
-        {"weight": pretrained_params["decoder.embeddings.embeddings.weight"]},
-        strict=True)
-    INFO("load embedding from NMT model")
-    return
+def test_attack(config_path,
+                save_to,
+                model_name="attacker",
+                shuffle=True,
+                use_gpu=True):
+    """
+    attack
+    :param config_path: attack attack configs
+    :param save_to: (string) saving directories
+    :param model_name: (string) for saving names
+    :param shuffle: (boolean) for batch scheme, shuffle data set
+    :param use_gpu: (boolean) on gpu or not
+    :return: attacked sequences
+    """
+    # initiate
+    with open(config_path.strip()) as f:
+        configs = yaml.load(f)
+    attack_configs = configs["attack_configs"]
+    attacker_model_configs = configs["attacker_model_configs"]
+    attacker_optim_configs = configs["attacker_optimizer_configs"]
+    training_configs = configs["training_configs"]
+
+    victim_config_path = attack_configs["victim_configs"]
+    victim_model_path = attack_configs["victim_model"]
+    with open(victim_config_path.strip()) as v_f:
+        print("open victim configs...%s" % victim_config_path)
+        victim_configs = yaml.load(v_f)
+    data_configs = victim_configs["data_configs"]
+
+    # building inputs
+    vocab_src = Vocabulary(**data_configs["vocabularies"][0])
+    vocab_trg = Vocabulary(**data_configs["vocabularies"][1])
+    # parallel data binding
+    train_bitext_dataset = ZipDataset(
+        TextLineDataset(data_path=data_configs['train_data'][0],
+                        vocabulary=vocab_src,
+                        max_len=data_configs['max_len'][0]),
+        TextLineDataset(data_path=data_configs['train_data'][1],
+                        vocabulary=vocab_trg,
+                        max_len=data_configs['max_len'][1]),
+        shuffle=shuffle
+    )
+    valid_bitext_dataset = ZipDataset(
+        TextLineDataset(data_path=data_configs["valid_data"][0],
+                        vocabulary=vocab_src,
+                        max_len=data_configs["max_len"][0]),
+        TextLineDataset(data_path=data_configs["valid_data"][1],
+                        vocabulary=vocab_trg,
+                        max_len=data_configs["max_len"][1]),
+        shuffle=shuffle
+    )
+
+    train_batch_size = training_configs["batch_size"]
+    train_buffer_size = training_configs["buffer_size"]
+    training_iterator = DataIterator(dataset=train_bitext_dataset,
+                                     batch_size=train_batch_size,
+                                     use_bucket=training_configs['use_bucket'],
+                                     buffer_size=train_buffer_size,
+                                     batching_func=training_configs['batching_key'])
+    # valid_iterator is bucketed by length to accelerate decoding (numbering to mark orders)
+    valid_iterator = DataIterator(dataset=valid_bitext_dataset,
+                                  batch_size=training_configs["valid_batch_size"],
+                                  use_bucket=True, buffer_size=50000, numbering=True)
+
+    w2p, w2vocab = load_or_extract_near_vocab(config_path=victim_config_path,
+                                              model_path=victim_model_path,
+                                              init_perturb_rate=attack_configs["init_perturb_rate"],
+                                              save_to=os.path.join(save_to, "near_vocab"),
+                                              save_to_full=os.path.join(save_to, "full_near_vocab"),
+                                              top_reserve=12)
+    attacker = Attacker(n_words=vocab_src.max_n_words,
+                        **attacker_model_configs)
+    if use_gpu:
+        attacker = attacker.cuda()
+        CURRENT_DEVICE = "cuda"
+    else:
+        CURRENT_DEVICE = "cpu"
+    # load embedding from trained NMT models
+    load_embedding(attacker, model_path=victim_model_path, device=CURRENT_DEVICE)
+
 
 
 test_discriminator(config_path=configs_path[2],
-                   save_to="./",
-                   victim_model_path=models_path[1],
-                   victim_config_path=configs_path[1],
+                   save_to="./Discriminator_enfr",
                    model_name="Discriminator")

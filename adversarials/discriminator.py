@@ -42,7 +42,14 @@ class TransDiscriminator(nn.Module):
         self.ffn = nn.Linear(in_features=4*d_model, out_features=2)
         self.dropout = nn.Dropout(dropout)
 
+
     def forward(self, x, y):
+        """
+        given src and trg, output classification label
+        :param x: batched src in shape [batch_size, max_seq_len]
+        :param y: batched trg in shape [batch_size, max_seq_len]
+        :return: labels indicating probability in shape [batch_size, 2]
+        """
         x_mask = x.detach().eq(PAD)
         y_mask = y.detach().eq(PAD)
         x_emb = self.src_embedding(x)
@@ -58,3 +65,18 @@ class TransDiscriminator(nn.Module):
         output = self.ffn(torch.cat((x_ctx_mean, y_ctx_mean), dim=-1))
         output = F.softmax(output, dim=-1)
         return output
+
+    def encode_src(self, x):
+        """
+        encode batched x into representation for attacker.
+        :param x: batched x [batch_size, max_seq_len]
+        :return: avg GRU_hiddens representing seq_x in shape [batch_size, dim]
+        """
+        x_mask = x.detach().eq(PAD)
+        x_emb = self.src_embedding(x)
+
+        ctx_x, _ = self.src_gru(x_emb, x_mask)
+        x_pad_mask = 1.0 - x_mask.float()
+        x_ctx_mean = (ctx_x * x_pad_mask.unsqueeze(2)).sum(1) / x_pad_mask.unsqueeze(2).sum(1)
+        return x_ctx_mean
+

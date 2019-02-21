@@ -1,0 +1,53 @@
+attack_configs:
+  victim_model: "/home/public_data/nmtdata/nmt-baselines/transformer-wmt15-enfr/small_baseline/baseline_enfr_save/transformer.best.final"
+  victim_configs: "/home/public_data/nmtdata/nmt-baselines/transformer-wmt15-enfr/small_baseline/transformer_wmt15_en2fr.yaml"
+  init_perturb_rate: 1.0
+
+attacker_model_configs:
+  d_word_vec: 512
+  d_model: 128
+  dropout: 0.0
+
+attacker_optimizer_configs:
+  optimizer: "adafactor"
+  learning_rate: 0.5
+  grad_clip: -1.0
+  optimizer_params: ~
+  schedule_methods: rsqrt
+  scheduler_configs:
+    d_model: 128
+    warmup_steps: 100
+
+discriminator_model_configs:
+  d_word_vec: 512
+  d_model: 128
+  dropout: 0.0
+  update_embedding: false
+
+discriminator_optimizer_configs:
+  optimizer: "adafactor"
+  learning_rate: 0.5
+  grad_clip: -1.0
+  optimizer_params: ~
+  schedule_method: rsqrt
+  scheduler_configs:
+    d_model: 128
+    warmup_steps: 10
+
+training_configs:
+  seed: 1234
+  max_epochs: 20
+  shuffle: true
+  use_bucket: true
+  batch_size: 256
+  buffer_size: 1024
+  batching_key: "samples"
+  update_cycle: 4
+  valid_batch_size: 50
+  disp_freq: 100
+  save_freq: 100
+  num_kept_checkpoints: 1
+  num_kept_best_model: 1
+  loss_valid_freq: 10
+  acc_valid_freq: 10
+  acc_valid_batch_size: 64

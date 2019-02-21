@@ -94,6 +94,22 @@ class Adafactor(Optimizer):
             group.setdefault("memory_exponent", 0.8)
             group.setdefault("decay_type", "pow")
 
+    def share_memory(self):
+        """
+        shared steps and avg-exp/momentum for gradient matrices
+        """
+        for group in self.param_groups:
+            for p in group["params"]:
+                state = self.state[p]
+                state["step"].share_memory_()
+                if len(p.data.grad.shape) >= 2:  # share exp
+                    state["v_c"].share_memory_()
+                    state["v_r"].share_memory_()
+                else:
+                    state["v"].share_memory_()
+                if group['betas'][0] > 0:  # share momentum
+                    state['m'].share_memory_()
+
     def step(self, closure=None):
         """ performs a single step of optimization
 
