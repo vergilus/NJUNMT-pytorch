@@ -26,7 +26,7 @@ def load_embedding(model, model_path, device):
     model.src_embedding.embeddings.load_state_dict(
         {"weight": pretrained_params["encoder.embeddings.embeddings.weight"]},
         strict=True)
-    if model.trg_embedding:
+    if "trg_embedding" in model.state_dict().keys():
         model.trg_embedding.embeddings.load_state_dict(
             {"weight": pretrained_params["decoder.embeddings.embeddings.weight"]},
             strict=True)
@@ -40,6 +40,44 @@ def prepare_D_data(w2p, w2vocab, victim_config, seqs_x, seqs_y, use_gpu=False, b
     """
     def _np_pad_batch_2D(samples, pad, batch_first=True, cuda=True):
         batch_size = len(samples)
+        sizes = [len(s) for s in samples]
+        max_size = max(sizes)
+        x_np = np.full((batch_size, max_size), fill_value=pad, dtype='int64')
+        for ii in range(batch_size):
+            x_np[ii, :sizes[ii]] = samples[ii]
+        if batch_first is False:
+            x_np = np.transpose(x_np, [1, 0])
+        x = torch.tensor(x_np)
+        if cuda is True:
+            x = x.cuda()
+        return x
+    # print(seqs_x)
+    seqs_x, flags = initial_random_perturb(victim_config, seqs_x, w2p, w2vocab, key_type="label")
+    # print(seqs_x)
+    seqs_x = list(map(lambda s: [BOS] + s + [EOS], seqs_x))
+    x = _np_pad_batch_2D(samples=seqs_x, pad=PAD,
+                         cuda=use_gpu, batch_first=batch_first)
+    seqs_y = list(map(lambda s: [BOS] + s + [EOS], seqs_y))
+    y = _np_pad_batch_2D(seqs_y, pad=PAD,
+                         cuda=use_gpu, batch_first=batch_first)
+    flags = torch.tensor(flags)
+    if use_gpu:
+        flags = flags.cuda()
+    return x, y, flags
+
+
+def prepare_data(seqs_x, seqs_y=None, cuda=False, batch_first=True):
+    """
+    Args:
+        eval ('bool'): indicator for eval/infer.
+
+    Returns:
+
+    """
+    def _np_pad_batch_2D(samples, pad, batch_first=True, cuda=True):
+
+        batch_size = len(samples)
+
         sizes = [len(s) for s in samples]
         max_size = max(sizes)
 
@@ -56,20 +94,15 @@ def prepare_D_data(w2p, w2vocab, victim_config, seqs_x, seqs_y, use_gpu=False, b
         if cuda is True:
             x = x.cuda()
         return x
-
-    # print(seqs_x)
-    seqs_x, flags = initial_random_perturb(victim_config, seqs_x, w2p, w2vocab, key_type="label")
-    # print(seqs_x)
     seqs_x = list(map(lambda s: [BOS] + s + [EOS], seqs_x))
     x = _np_pad_batch_2D(samples=seqs_x, pad=PAD,
-                         cuda=use_gpu, batch_first=batch_first)
+                         cuda=cuda, batch_first=batch_first)
+    if seqs_y is None:
+        return x
     seqs_y = list(map(lambda s: [BOS] + s + [EOS], seqs_y))
     y = _np_pad_batch_2D(seqs_y, pad=PAD,
-                         cuda=use_gpu, batch_first=batch_first)
-    flags = torch.tensor(flags)
-    if use_gpu:
-        flags = flags.cuda()
-    return x, y, flags
+                         cuda=cuda, batch_first=batch_first)
+    return x, y
 
 
 def compute_D_forward(discriminator_model, criterion,
@@ -172,7 +205,6 @@ def test_discriminator(config_path,
                                   batch_size=training_configs["valid_batch_size"],
                                   use_bucket=True, buffer_size=50000, numbering=True)
     # initiate saver
-    best_model_prefix = os.path.join(save_to, model_name + "best")
     model_collections = Collections()
     checkpoint_saver = Saver(save_prefix="{0}.ckpt".format(os.path.join(save_to, model_name)),
                              num_max_keeping=training_configs['num_kept_checkpoints']
@@ -359,24 +391,49 @@ def test_attack(config_path,
                                   batch_size=training_configs["valid_batch_size"],
                                   use_bucket=True, buffer_size=50000, numbering=True)
 
+    # initiate saver
+    model_collections = Collections()
+    checkpoint_saver = Saver(save_prefix="{0}.ckpt".format(os.path.join(save_to, model_name)),
+                             num_max_keeping=training_configs['num_kept_checkpoints']
+                             )
     w2p, w2vocab = load_or_extract_near_vocab(config_path=victim_config_path,
                                               model_path=victim_model_path,
                                               init_perturb_rate=attack_configs["init_perturb_rate"],
                                               save_to=os.path.join(save_to, "near_vocab"),
                                               save_to_full=os.path.join(save_to, "full_near_vocab"),
-                                              top_reserve=12)
-    attacker = Attacker(n_words=vocab_src.max_n_words,
-                        **attacker_model_configs)
-    if use_gpu:
-        attacker = attacker.cuda()
-        CURRENT_DEVICE = "cuda"
-    else:
-        CURRENT_DEVICE = "cpu"
+                                              top_reserve=12,
+                                              emit_as_id=True)
+    # build attacker
+    # attacker = Attacker(n_words=vocab_src.max_n_words,
+    #                     **attacker_model_configs)
+    # if use_gpu:
+    #     attacker = attacker.cuda()
+    #     CURRENT_DEVICE = "cuda"
+    # else:
+    #     CURRENT_DEVICE = "cpu"
     # load embedding from trained NMT models
-    load_embedding(attacker, model_path=victim_model_path, device=CURRENT_DEVICE)
+    # load_embedding(attacker, model_path=victim_model_path, device=CURRENT_DEVICE)
+    # attacker.eval()
+    # for i in range(6):
+    train_iter = training_iterator.build_generator()
+    batch = train_iter.__next__()
+    print(batch[1][3])
+        # seqs_x, seqs_y = batch
+        # x, y = prepare_data(seqs_x, seqs_y, use_gpu)
+        # perturbed_x, flags = attacker.seq_attack(seqs_x_ids=x,
+        #                                          w2p=w2p, w2vocab=w2vocab,
+        #                                          training_mode=False)
+        # print("origin:", x)
+        # print("perturbed:", perturbed_x)
 
 
 
-test_discriminator(config_path=configs_path[2],
-                   save_to="./Discriminator_enfr",
-                   model_name="Discriminator")
+# test_discriminator(config_path=configs_path[2],
+#                    save_to="./Discriminator_enfr",
+#                    model_name="Discriminator")
+
+
+test_attack(config_path=configs_path[2],
+            save_to="./Attacker_enfr",
+            model_name="Attacker")
+

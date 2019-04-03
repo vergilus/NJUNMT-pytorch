@@ -1,9 +1,8 @@
 import torch
-from torch.optim.optimizer import Optimizer
 from math import sqrt
 
 
-class Adafactor(Optimizer):
+class Adafactor(torch.optim.Optimizer):
     """  implement google Adafactor algorithm
     Adafactor is described in https://arxiv.org/abs/1804.04235.
     Adafactor is most similar to ADAM (Kingma and Ba), the major differences are:
@@ -86,6 +85,28 @@ class Adafactor(Optimizer):
                         multiply_by_params_scale=multiply_by_params_scale,
                         decay_type=decay_type)
         super(Adafactor, self).__init__(params, defaults)
+        """We initialize
+        ```````````````````````````````````
+        if var is 2-dimensional: v is always 1-dimensional
+          v_r <- zeros([num_rows])
+          v_c <- zeros([num_cols])
+        if var is 0-dimensional or 1-dimensional:
+          v <- zeros(shape(var))
+        ```````````````````````````````````
+        """
+        for group in self.param_groups:
+            for p in group['params']:
+                state = self.state[p]
+                state['step'] = 0
+                if len(p.data.shape) >= 2:
+                    # factored when grad.shape>=2
+                    state['v_r'] = torch.zeros_like(p.data.sum(dim=-1))
+                    state['v_c'] = torch.zeros_like(p.data.sum(dim=-2))
+                else:
+                    state['v'] = torch.zeros_like(p.data)
+                if betas[0] > 0:
+                    # enable momentum
+                    state['m'] = torch.zeros_like(p.data)
 
     def __setstate__(self, state):
         super(Adafactor, self).__setstate__(state)
@@ -101,8 +122,10 @@ class Adafactor(Optimizer):
         for group in self.param_groups:
             for p in group["params"]:
                 state = self.state[p]
+                # switch step variable to torch variable to share among MP
+                state["step"] = torch.tensor(state["step"])
                 state["step"].share_memory_()
-                if len(p.data.grad.shape) >= 2:  # share exp
+                if len(p.data.shape) >= 2:  # share exp
                     state["v_c"].share_memory_()
                     state["v_r"].share_memory_()
                 else:
@@ -153,19 +176,11 @@ class Adafactor(Optimizer):
 
                 state = self.state[p]
 
-                if len(state) == 0:  # initialization:
-                    state["step"] = 0
-                    if len(grad.shape) >= 2:
-                        # factored when grad.shape>=2
-                        state['v_r'] = torch.zeros_like(p.data.sum(dim=-1))
-                        state['v_c'] = torch.zeros_like(p.data.sum(dim=-2))
-                    else:
-                        state['v'] = torch.zeros_like(p.data)
-                    if group['betas'][0] > 0:
-                        # enable momentum
-                        state['m'] = torch.zeros_like(p.data)
-
                 state["step"] += 1
+                step = state["step"]
+                if type(step) == torch.Tensor:
+                    step = step.item()
+
                 beta1, beta2 = group['betas']
                 eps1, eps2 = group['eps']
 
@@ -180,22 +195,22 @@ class Adafactor(Optimizer):
 
                 # beta2 decay if there's any
                 if group['decay_type'] == "pow":
-                    beta2 = 1.0 - state["step"] ** (- group["memory_exponent"])
+                    beta2 = 1.0 - step ** (- group["memory_exponent"])
                 elif group['decay_type'] == "adam":
-                    beta2 = beta2 * (1.0 - beta2 ** (state['step'] + 1)) / (1.0 - beta2 ** state['step'])
+                    beta2 = beta2 * (1.0 - beta2 ** (step + 1)) / (1.0 - beta2 ** step)
 
                 # scale_correction = grad_squared_mean * 1e-30  # hack from tf.adafactor
                 # update_scale += scale_correction
                 # beta2 += scale_correction
-
                 if len(grad.shape) >= 2:
                     # factored along the last 2 dimensions
                     if grad_squared_mean.is_cuda:
                         v_r, v_c = state["v_r"].cuda(), state["v_c"].cuda()
                     else:
                         v_r, v_c = state["v_r"], state["v_c"]
-                    v_r.mul_(beta2).add_(1.0 - beta2, torch.mean(grad_spuared, dim=-1))
-                    v_c.mul_(beta2).add_(1.0 - beta2, torch.mean(grad_spuared, dim=-2))
+                    v_r.mul_(beta2).add_((1.0 - beta2)*torch.mean(grad_spuared, dim=-1))
+                    v_c.mul_(beta2).add_((1.0 - beta2)*torch.mean(grad_spuared, dim=-2))
+
                     r_factor = torch.rsqrt(v_r.div(torch.mean(v_r, dim=-1)))
                     c_factor = torch.rsqrt(v_c)
                     U = grad.mul(r_factor.unsqueeze(-1)).mul(c_factor.unsqueeze(-2))
@@ -204,7 +219,7 @@ class Adafactor(Optimizer):
                         v = state['v'].cuda()
                     else:
                         v = state['v']
-                    v.mul_(beta2).add_(1.0 - beta2, grad_spuared)
+                    v.mul_(beta2).add_((1.0 - beta2)*grad_spuared)
                     U = grad.mul(torch.rsqrt(v))
 
                 if group['clipping_threshold'] is not None:
@@ -218,7 +233,7 @@ class Adafactor(Optimizer):
                         m = state['m'].cuda()
                     else:
                         m = state['m']
-                    subtrahend.mul_(1.0 - beta1).add_(beta1, m)
+                    subtrahend.mul_(1.0 - beta1).add_(beta1*m)
 
                 p.data.add_(-subtrahend)
 

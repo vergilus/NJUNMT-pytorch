@@ -19,7 +19,7 @@ class TransDiscriminator(nn.Module):
                  **kwargs,
                  ):
         super(TransDiscriminator, self).__init__()
-        # the embedding is pre-trained
+        # the embedding is pre-trained and without dropout layer
         self.src_embedding = Embeddings(num_embeddings=n_src_words,
                                         embedding_dim=d_word_vec,
                                         dropout=0.0,
@@ -42,7 +42,6 @@ class TransDiscriminator(nn.Module):
         self.ffn = nn.Linear(in_features=4*d_model, out_features=2)
         self.dropout = nn.Dropout(dropout)
 
-
     def forward(self, x, y):
         """
         given src and trg, output classification label
@@ -62,7 +61,7 @@ class TransDiscriminator(nn.Module):
         y_pad_mask = 1.0 - y_mask.float()
         x_ctx_mean = (ctx_x * x_pad_mask.unsqueeze(2)).sum(1) / x_pad_mask.unsqueeze(2).sum(1)
         y_ctx_mean = (ctx_y * y_pad_mask.unsqueeze(2)).sum(1) / y_pad_mask.unsqueeze(2).sum(1)
-        output = self.ffn(torch.cat((x_ctx_mean, y_ctx_mean), dim=-1))
+        output = self.ffn(self.dropout(torch.cat((x_ctx_mean, y_ctx_mean), dim=-1)))
         output = F.softmax(output, dim=-1)
         return output
 
