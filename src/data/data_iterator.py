@@ -164,7 +164,7 @@ class DataIterator(object):
             batch_size: Integer. Size of a batch. When batching_key is "samples", it represents the
                 the number of samples. When batching_key is "tokens", it represents the tokens in a batch.
             use_bucket: Boolean value. Whether to use bucket.
-            batching_key: Criterion to allocate a batch. Can only be "samples" or "tokens"
+            batching_func: Criterion to allocate a batch. Can only be "samples" or "tokens"
         """
         self.dataset = dataset
         self.batch_size = batch_size
@@ -255,9 +255,7 @@ class DataIterator(object):
         self._end = False
 
     def build_generator(self, batch_size=None):
-
         while True:
-
             # We re-allocate the buffer when there at most on batch.
             # Usually this batch is not full.
 
@@ -271,11 +269,9 @@ class DataIterator(object):
                 break
 
             # Accumulated batches until reach the batch_size
-
             try:
                 batch = self.buffer.pop(0)
             except IndexError:
                 self.reset()
                 break
-
             yield batch.unpack()

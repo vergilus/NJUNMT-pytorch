@@ -32,6 +32,7 @@ class Record(object):
     def n_fields(self):
         return len(self.fields)
 
+
 def zip_records(*records: Record):
     """
     Combine several records into one single record. The key of the new record is the
@@ -46,8 +47,8 @@ def zip_records(*records: Record):
 
     return Record(*new_fields, index=max(indices))
 
-def shuffle(*path):
 
+def shuffle_data(*path):
     f_handles = [open(p) for p in path]
 
     # Read all the data
@@ -127,7 +128,7 @@ class Dataset(object):
     def _data_iter(self, shuffle):
 
         if shuffle:
-            return shuffle(self.data_path)
+            return shuffle_data(self.data_path)
         else:
             return open(self.data_path)
 
@@ -213,9 +214,8 @@ class ZipDataset(Dataset):
         return len(self.datasets[0])
 
     def _data_iter(self, shuffle):
-
-        if shuffle:
-            return shuffle(*self.data_path)
+        if self.shuffle or shuffle:
+            return shuffle_data(*self.data_path)
         else:
             return [open(dp) for dp in self.data_path]
 

@@ -178,6 +178,12 @@ class Translate_Env(object):
     def reset(self):
         return self._init_state()
 
+    def reset_discriminator(self):
+        self.discriminator.reset()
+        load_embedding(self.discriminator,
+                       model_path=self.victim_model_path,
+                       device=self.device)
+
     def prepare_D_data(self, attacker, seqs_x, seqs_y, use_gpu, batch_first=True):
         """
         using global_attacker to generate training data for discriminator
@@ -209,7 +215,7 @@ class Translate_Env(object):
                              cuda=use_gpu, batch_first=batch_first)
         # training mode attack: randomly choose half of the seqs to attack
         attacker.eval()
-        x, flags = attacker.seq_attack(x, self.w2p, self.w2vocab,
+        x, flags = attacker.seq_attack(x, self.w2vocab,
                                        training_mode=True)
 
         seqs_y = list(map(lambda s: [BOS] + s + [EOS], seqs_y))
@@ -235,7 +241,6 @@ class Translate_Env(object):
             eval ('bool'): indicator for eval/infer.
         Returns: padded data matrices
         """
-
         def _np_pad_batch_2D(samples, pad, batch_first=True, cuda=True):
             batch_size = len(samples)
             sizes = [len(s) for s in samples]
@@ -307,6 +312,7 @@ class Translate_Env(object):
     def update_discriminator(self,
                              data_iterator,
                              attacker_model,
+                             base_steps=0,
                              min_update_steps=20,
                              max_update_steps=300,
                              accuracy_bound=0.8,
@@ -315,13 +321,14 @@ class Translate_Env(object):
         update discriminator
         :param data_iterator: (data_iterator type) provide batched labels for training
         :param attacker_model: attacker to generate training data for discriminator
+        :param base_steps: used for saving
         :param min_update_steps: (integer) minimum update steps,
                     also the discriminator evaluate steps
         :param max_update_steps: (integer) maximum update steps
         :param accuracy_bound: (float) update until accuracy reaches the bound
                     (or max_update_steps)
         :param summary_writer: used to log discriminator learning information
-        :return: none
+        :return: steps and test accuracy as trust region
         """
         INFO("update discriminator")
         self.optim_D.zero_grad()
@@ -331,8 +338,6 @@ class Translate_Env(object):
             batch = data_iterator.__next__()
             # update the discriminator
             step += 1
-            if step > max_update_steps:
-                return  # stop updates
             if self.scheduler_D is not None:
                 # override learning rate in self.optim_D
                 self.scheduler_D.step(global_step=step)
@@ -355,25 +360,31 @@ class Translate_Env(object):
 
             # valid for accuracy / check for break (if any)
             if step % min_update_steps == 0:
-                pass
                 acc = self.acc_validation(attacker_model, use_gpu=True if self.device != "cpu" else False)
                 print("discriminator acc: %2f" % acc)
-                summary_writer.add_scalar("discriminator", scalar_value=acc, global_step=step)
-                if accuracy_bound and acc>accuracy_bound:
+                summary_writer.add_scalar("discriminator", scalar_value=acc, global_step=base_steps+step)
+                if accuracy_bound and acc > accuracy_bound:
                     INFO("discriminator reached training acc bound, updated.")
-                    return
-            if step >= max_update_steps:
-                INFO("Reach maximum discriminator update. Finished.")
-                return
+                    return base_steps+step, acc
 
-    def translate(self):
+            if step > max_update_steps:
+                acc = self.acc_validation(attacker_model, use_gpu=True if self.device != "cpu" else False)
+                print("discriminator acc: %2f" % acc)
+                INFO("Reach maximum discriminator update. Finished.")
+                return base_steps+step, acc   # stop updates
+
+
+    def translate(self, inputs=None):
         """
         translate the self.perturbed_src
+        :param input: if None, translate perturbed sequences stored in the environments
         :return: list of translation results
         """
+        if inputs is None:
+            inputs = self.padded_src
         with torch.no_grad():
             perturbed_results = beam_search(self.translate_model, beam_size=5, max_steps=150,
-                                            src_seqs=self.padded_src, alpha=-1.0,
+                                            src_seqs=inputs, alpha=-1.0,
                                             )
         perturbed_results = perturbed_results.cpu().numpy().tolist()
         # only use the top result from the result
@@ -402,7 +413,9 @@ class Translate_Env(object):
             batch_size = actions.shape[0]
             reward = 0
             inputs = self.padded_src[:, self.index]
+            inputs_mask = 1-inputs.eq(PAD)
             target_of_step = []
+            # modification on sequences (state)
             for batch_index in range(batch_size):
                 word_id = inputs[batch_index]
                 # print(word_id.item())
@@ -411,6 +424,7 @@ class Translate_Env(object):
                 target_of_step += [target_word_id]
             if self.device != "cpu" and not actions.is_cuda:
                 actions = actions.cuda()
+                actions *= inputs_mask  # PAD is neglect
             # override the state src with random choice from candidates
             self.padded_src[:, self.index] *= (1 - actions)
             adjustification_ = torch.tensor(target_of_step)
@@ -418,7 +432,7 @@ class Translate_Env(object):
                 adjustification_ = adjustification_.cuda()
             self.padded_src[:, self.index] += adjustification_ * actions
 
-            # update states
+            # update sequences' pointer
             self.index += 1
 
             """ run discriminator check for terminal signals, update local terminal list
@@ -429,35 +443,34 @@ class Translate_Env(object):
             discriminate_out = self.discriminator(self.padded_src, self.padded_trg)
             self.terminal_signal = self.terminal_signal or discriminate_out.detach().argmax(dim=-1).cpu().numpy().tolist()
             signal = (1 - discriminate_out.argmax(dim=-1)).sum().item()
-            if signal == 0 or self.index == self.padded_src.shape[1]:
+            if signal == 0 or self.index == self.padded_src.shape[1]-1:
                 terminal = True  # no need to further explore or reached EOS for all src
 
             """ collect rewards on the current state
             """
-            # calculate rewards: survival
+            # calculate intermediate survival rewards
             if not terminal:  # survival rewards for survived objects
                 distribution, discriminate_index = discriminate_out.max(dim=-1)
                 distribution = distribution.detach().cpu().numpy()
                 discriminate_index = (1 - discriminate_index).cpu().numpy()
                 survival_value = distribution * discriminate_index * (1-np.array(self.terminal_signal))
-                reward += survival_value.sum()
-            else:
-                reward = -0.1*batch_size
+                reward += survival_value.sum()/2
+            else:  # penalty for intermediate termination
+                reward = -1 * batch_size
 
-            # check for finished BLEU degradation
-            if self.index >= min(self.sent_len)-1:
-                # there is potential finished sentences
-                if self.index == self.padded_src.shape[1]-1:
-                    # translate calculate padded_src:
-                    perturbed_result = self.translate()
-                    # calculate final BLEU degredation:
-                    bleu_degrade = []
-                    for i, sent in enumerate(self.seqs_y):
-                        if self.index >= self.sent_len[i]-1 and self.terminal_signal[i] == 0:
-                            bleu_degrade.append(self.origin_bleu[i]-bleu.sentence_bleu(references=[sent],                                                           hypothesis=perturbed_result[i]))
-                        else:
-                            bleu_degrade.append(0.0)
-                    reward += sum(bleu_degrade)
+            # only check for finished BLEU degradation when determined on the last label
+            if self.index == self.padded_src.shape[1]-1:
+                # translate calculate padded_src:
+                perturbed_result = self.translate()
+                # calculate final BLEU degredation:
+                bleu_degrade = []
+                for i, sent in enumerate(self.seqs_y):
+                    # sentence is still surviving
+                    if self.index >= self.sent_len[i]-1 and self.terminal_signal[i] == 0:
+                        bleu_degrade.append(self.origin_bleu[i]-bleu.sentence_bleu(references=[sent],                                                           hypothesis=perturbed_result[i]))
+                    else:
+                        bleu_degrade.append(0.0)
+                reward += sum(bleu_degrade) * 10
 
             reward = reward/batch_size
 

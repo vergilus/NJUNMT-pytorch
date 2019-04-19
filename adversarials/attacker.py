@@ -97,7 +97,7 @@ class Attacker(nn.Module):
         """
         attack_feature = self.preprocess(x, label)
         attack_out = F.softmax(self.dropout(self.attacker_linear(attack_feature)), dim=-1)
-        critic_out = F.relu(self.dropout(self.critic_linear(attack_feature)))
+        critic_out = F.elu(self.dropout(self.critic_linear(attack_feature)))
         critic_out = critic_out.mean()
         return attack_out, critic_out
 
@@ -122,22 +122,24 @@ class Attacker(nn.Module):
         """
         # return value function of the current state
         attack_feature = self.preprocess(x, label)
-        critic_out = F.relu(self.dropout(self.critic_linear(attack_feature)))
+        critic_out = F.elu(self.dropout(self.critic_linear(attack_feature)))
         critic_out = critic_out.mean()
         return critic_out
 
-    def seq_attack(self, seqs_x_ids, w2p, w2vocab, training_mode):
-        """ launch the attack for batch of sequences until EOS
-        this is for data-preparation of training discriminator
+    def seq_attack(self, seqs_x_ids, w2vocab, training_mode):
+        """ launch the attack for batch of sequences until EOS without discriminator constrain
+        this is for data-preparation of training discriminator,
         used in inference and prepare training data for discriminator
         :param seqs_x_ids: padded tensor variable of batched labels [batch, max_seq_len]
-        :param w2p: dictionary [word: probability] (must be saved as ids)
         :param w2vocab: dictionary [word: near candidates] (must be saved as ids)
         :param training_mode: for discriminator training, randomly choose half of the x to perturb
         :return: torch variable perturbed seqs_x and flags
             perturbed: flag = 1, otherwise 0
         """
         perturbed_x_ids = seqs_x_ids.clone()
+        # print(perturbed_x_ids)
+        mask = seqs_x_ids.detach().eq(PAD).long()
+        # print(mask)
         with torch.no_grad():
             batch_size, max_steps = seqs_x_ids.shape
             for t in range(1, max_steps-1):  # ignore BOS and EOS
@@ -164,7 +166,8 @@ class Attacker(nn.Module):
                 flags = torch.bernoulli(0.5*flags).long()
                 perturbed_x_ids *= flags.unsqueeze(dim=-1)
                 perturbed_x_ids += seqs_x_ids*(1-flags).unsqueeze(dim=-1)
-
+            # apply mask on the results
+            perturbed_x_ids *= (1-mask)
         return perturbed_x_ids, flags
 
     def sync_from(self, attack_model):

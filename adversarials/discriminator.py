@@ -79,3 +79,16 @@ class TransDiscriminator(nn.Module):
         x_ctx_mean = (ctx_x * x_pad_mask.unsqueeze(2)).sum(1) / x_pad_mask.unsqueeze(2).sum(1)
         return x_ctx_mean
 
+    def reset(self):
+        def weights_init(tensor):
+            if tensor.ndimension() == 1:
+                nn.init.constant_(tensor, val=0.0)
+            else:
+                nn.init.xavier_normal_(tensor)
+            return tensor
+
+        # collect module parameters
+        for name, p in self.named_parameters():
+            # print(name, " reset")
+            weights_init(p)
+        return
