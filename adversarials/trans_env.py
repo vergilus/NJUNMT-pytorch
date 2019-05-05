@@ -155,6 +155,7 @@ class Translate_Env(object):
         """
         self.index = 1
         self.origin_bleu = []
+
         batch = self.data_iterator.__next__()
         assert len(batch) == 3, "must be provided with line index (check for data_iterator)"
         # training, parallel trg is provided
@@ -165,10 +166,10 @@ class Translate_Env(object):
         self.padded_src, self.padded_trg = self.prepare_data(seqs_x=seqs_x,
                                                              seqs_y=self.seqs_y,
                                                              cuda=True if self.device!="cpu" else False)
-        origin_result = self.translate()
+        self.origin_result = self.translate()
         # calculate BLEU scores for the top candidate
         for index, sent_t in enumerate(self.seqs_y):
-            bleu_t = bleu.sentence_bleu(references=[sent_t], hypothesis=origin_result[index])
+            bleu_t = bleu.sentence_bleu(references=[sent_t], hypothesis=self.origin_result[index])
             self.origin_bleu.append(bleu_t)
         return self.padded_src.cpu().numpy()
 

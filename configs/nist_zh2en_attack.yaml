@@ -9,6 +9,7 @@ attack_configs:
   value_coef: 0.5
 
 attacker_configs:
+  attacker_update_steps: 120
   attacker_model_configs:
     action_space: 2
     action_roll_space: 1
@@ -32,6 +33,12 @@ discriminator_data_configs:
   - "/home/user_data/weihr/NMT_DATA_PY3/NIST-ZH-EN/test/mt03.ref0"
 
 discriminator_configs:
+  discriminator_update_steps: 80
+  acc_bound: 0.85
+  acc_valid_freq: 10
+  acc_valid_batch_size: 50
+  patience: 5
+
   discriminator_model_configs:
     d_word_vec: 512
     d_model: 128
@@ -63,5 +70,4 @@ training_configs:
   num_kept_checkpoints: 1
   num_kept_best_model: 1
   loss_valid_freq: 10
-  acc_valid_freq: 10
-  acc_valid_batch_size: 64
+

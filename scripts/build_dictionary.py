@@ -3,7 +3,7 @@
 # email: whr94621@gmail.com
 
 """
-Build dictionary from tokenized corpus.
+Build dictionary from corpus.
 
 output: word X word_freq, descent ordered by word frequency
 """
@@ -13,11 +13,6 @@ from collections import OrderedDict
 import argparse
 import sys
 import time
-
-EOS = 0
-UNK = 1
-BOW = 2
-EOW = 3
 
 def INFO(string):
     time_format = '%Y-%m-%d %H:%M:%S'
@@ -56,7 +51,7 @@ def main(filename, num, freq, char, verbose):
 
     INFO('Generate vocabulary...')
     word_freqs = [(w, f) for w, f in word_freqs.items()]
-    word_freqs = sorted(word_freqs, key=lambda x: -x[1])
+    word_freqs = sorted(word_freqs, key=lambda x : -x[1])
 
     if num != 0 and freq == 0:
         word_freqs = word_freqs[:num - 2]

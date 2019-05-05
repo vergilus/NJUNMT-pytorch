@@ -14,11 +14,13 @@ import argparse
 import torch
 import torch.multiprocessing as mp
 
+# "/home/zouw/pycharm_project_NMT_torch/configs/nist_zh2en_attack.yaml"
+
 parser = argparse.ArgumentParser()
 parser.add_argument("--n", type=int, default=1,
                     help="parallel attacker process (default as 1)")
 parser.add_argument("--config_path", type=str,
-                    default="/home/zouw/pycharm_project_NMT_torch/configs/nist_zh2en_attack.yaml",
+                    default="/home/zouw/pycharm_project_NMT_torch/configs/nist_zh2en_attack_dl4mt.yaml",
                     help="the path to attack config file.")
 # parser.add_argument("--data_path", type=str, default=None,
 #                     help="text_data for environments, default as None (for training Mode)")
@@ -28,7 +30,7 @@ parser.add_argument("--max_episode_lengths", type=int, default=200,
                     help="maximum steps for attack (default as 200)")
 parser.add_argument("--max_episodes", type=int, default=500000,
                     help="maximum environment episode for training (default as 500k)")
-parser.add_argument("--save_to", type=str, default="./attack_log",
+parser.add_argument("--save_to", type=str, default="./attack_dl4mt_log",
                     help="the path for model-saving and log saving.")
 parser.add_argument("--use_gpu", action="store_true", default=False,
                     help="Whether to use GPU.(default as false)")
@@ -47,8 +49,9 @@ def run():
     with open(args.config_path) as f:
         configs = yaml.load(f)
     attack_configs = configs["attack_configs"]
-    attacker_model_configs = configs["attacker_configs"]["attacker_model_configs"]
-    attacker_optimizer_configs = configs["attacker_configs"]["attacker_optimizer_configs"]
+    attacker_configs = configs["attacker_configs"]
+    attacker_model_configs = attacker_configs["attacker_model_configs"]
+    attacker_optimizer_configs = attacker_configs["attacker_optimizer_configs"]
     # discriminator_data_configs = configs["discriminator_data_configs"]
     discriminator_configs = configs["discriminator_configs"]
     training_configs = configs["training_configs"]
@@ -131,15 +134,16 @@ def run():
     counter = mp.Value("i", 0)
     lock = mp.Lock()  # for multiple attackers update
 
+    train(0, device, args, counter, lock,
+          attack_configs, discriminator_configs,
+          src_vocab, trg_vocab, data_iterator,
+          global_attacker, attacker_configs,
+          optimizer, scheduler,
+          checkpoint_saver)
     test(args.n, "cuda:0", args,
          attack_configs, discriminator_configs,
          src_vocab, trg_vocab, data_iterator,
          global_attacker, attacker_model_configs, counter)
-    # train(0, device, args, counter, lock,
-    #       attack_configs, discriminator_configs,
-    #       src_vocab, trg_vocab, data_iterator,
-    #       global_attacker, attacker_model_configs,
-    #       attacker_optimizer_configs, optimizer, scheduler, checkpoint_saver)
 
     # # run the attack test for initiation
     # p = mp.Process(target=test,
@@ -154,12 +158,12 @@ def run():
     # # run multiple training process of local attacker to update global one
     # for rank in range(args.n):
     #     p = mp.Process(target=train,
-    #                    args=(rank, "cuda:%d" % (rank), args, counter, lock,
+    #                    args=(rank, "cuda:%d" % (rank+1), args, counter, lock,
     #                          attack_configs, discriminator_configs,
     #                          src_vocab, trg_vocab, data_iterator,
-    #                          global_attacker, attacker_model_configs,
-    #                          attacker_optimizer_configs, optimizer, scheduler
-    #                          checkpoint_saver ))
+    #                          global_attacker, attacker_configs,
+    #                          optimizer, scheduler,
+    #                          checkpoint_saver))
     #     p.start()
     #     process.append(p)
     # for p in process:
@@ -196,7 +200,6 @@ def test(rank, device, args,
                         data_iterator=data_iterator,
                         save_to=args.save_to, device="cuda")
     print("finish build env")
-
     # need a directory for saving and loading
     summary_writer = SummaryWriter(log_dir=os.path.join(args.save_to, "test_env"))
 
@@ -206,80 +209,116 @@ def test(rank, device, args,
         local_attacker.cuda()
     local_attacker.eval()
 
+    def trans_from_vocab(vocab, ids):
+        """
+        transcribe from vocabulary
+        :param vocab: A Vocabulary object
+        :param ids: 2D list of ids, in shape [sent, tokens]
+        :return: 2D list of tokens, with all special tokens removed (detokenized)
+        """
+        result = []
+        for sent_ids in ids:
+            result += [vocab.ids2sent([i for i in sent_ids if i not in [PAD, EOS, BOS]])]
+        return result
+
     episode_count = 0
-    while True:
-        padded_src = env.reset()
-        #  sync with current attacker model
-        local_attacker.load_state_dict(global_attacker.state_dict())
-        episode_count += 1
+    with open(os.path.join(args.save_to, "test_env/src_enhanced"), "w") as src_f, \
+            open(os.path.join(args.save_to, "test_env/src_pert"), "w") as src_pert, \
+            open(os.path.join(args.save_to, "test_env/trg_enhanced"), "w") as trg_f, \
+            open(os.path.join(args.save_to, "test_env/trans_origin"), "w") as trans_origin,\
+            open(os.path.join(args.save_to, "test_env/trans_pert"), "w") as trans_pert:
+        while True:
+            padded_src = env.reset()
+            #  sync with current attacker model
+            local_attacker.load_state_dict(global_attacker.state_dict())
+            episode_count += 1
 
-        perturbed_x_ids = env.padded_src.clone()
-        # print(perturbed_x_ids)
-        mask = perturbed_x_ids.detach().eq(PAD).long()
-        # print(mask)
-        with torch.no_grad():
-            batch_size, max_steps = padded_src.shape
-            for t in range(1, max_steps - 1):  # ignore BOS and EOS
-                inputs = env.padded_src[:, t - 1:t + 1]
-                attack_out = local_attacker.get_attack(x=perturbed_x_ids, label=inputs)
-                actions = attack_out.argmax(dim=-1)
-                actions_entropy = -(attack_out * torch.log(attack_out)).sum(dim=-1).mean()
-                summary_writer.add_scalar("action_entropy", scalar_value=actions_entropy.item(), global_step=episode_count)
-                # value = local_attacker.get_critic(x=perturbed_x_ids, label=inputs)*actions
-                target_of_step = []
-                for batch_index in range(batch_size):
-                    word_id = inputs[batch_index][1]
-                    target_word_id = env.w2vocab[word_id.item()][np.random.choice(len(env.w2vocab[word_id.item()]), 1)[0]]
-                    target_of_step += [target_word_id]
-                # override the perturbed results with random choice from candidates
-                perturbed_x_ids[:, t] *= (1 - actions)
-                adjustification_ = torch.tensor(target_of_step, device=inputs.device)
-                if GlobalNames.USE_GPU:
-                    adjustification_ = adjustification_.cuda()
-                perturbed_x_ids[:, t] += adjustification_ * actions
-            # apply mask on the results
-            perturbed_x_ids *= (1 - mask)
-        # translate sequences and calculate degredated bleu scores on batches
-        perturbed_result = env.translate(perturbed_x_ids)
-        print("orgin_results:", env.seqs_y)
-        print("perturbed_results:", perturbed_result)
-        print("origin_bleu:", env.origin_bleu)
+            perturbed_x_ids = env.padded_src.clone()
+            # print(perturbed_x_ids)
+            mask = perturbed_x_ids.detach().eq(PAD).long()
+            # print(mask)
+            with torch.no_grad():
+                batch_size, max_steps = padded_src.shape
+                for t in range(1, max_steps - 1):  # ignore BOS and EOS
+                    inputs = env.padded_src[:, t - 1:t + 1]
+                    attack_out = local_attacker.get_attack(x=perturbed_x_ids, label=inputs)
+                    actions = attack_out.argmax(dim=-1)
+                    actions_entropy = -(attack_out * torch.log(attack_out)).sum(dim=-1).mean()
+                    summary_writer.add_scalar("action_entropy", scalar_value=actions_entropy.item(), global_step=episode_count)
+                    # value = local_attacker.get_critic(x=perturbed_x_ids, label=inputs)*actions
+                    target_of_step = []
+                    for batch_index in range(batch_size):
+                        word_id = inputs[batch_index][1]
+                        target_word_id = env.w2vocab[word_id.item()][np.random.choice(len(env.w2vocab[word_id.item()]), 1)[0]]
+                        target_of_step += [target_word_id]
+                    # override the perturbed results with random choice from candidates
+                    perturbed_x_ids[:, t] *= (1 - actions)
+                    adjustification_ = torch.tensor(target_of_step, device=inputs.device)
+                    if GlobalNames.USE_GPU:
+                        adjustification_ = adjustification_.cuda()
+                    perturbed_x_ids[:, t] += adjustification_ * actions
+                # apply mask on the results
+                perturbed_x_ids *= (1 - mask)
+            # translate sequences and calculate degredated bleu scores on batches
+            perturbed_result = env.translate(perturbed_x_ids)
 
-        # calculate final BLEU degredation:
-        perturbed_bleu = []
-        for i, sent in enumerate(env.seqs_y):
-            # sentence is still surviving
-            perturbed_bleu.append(
-                bleu.sentence_bleu(references=[sent], hypothesis=perturbed_result[i]))
-        print("perturbed_bleu: ", perturbed_bleu)
-        bleu_degrade = (sum(env.origin_bleu)-sum(perturbed_bleu))/len(perturbed_bleu)
-        summary_writer.add_scalar("bleu_degradation",
-                                  scalar_value=bleu_degrade,
-                                  global_step=episode_count)
+            trg_y = trans_from_vocab(trg_vocab, env.seqs_y)
+            trans_y_p = trans_from_vocab(trg_vocab, perturbed_result)
+            trans_y = trans_from_vocab(trg_vocab, env.origin_result)
+            print("golden:", trg_y)
+            print("origin_results:", trans_y)
+            print("perturbed_results:", trans_y_p)
 
-        # edit BLEU
-        edit_bleu = []
-        padded_src = padded_src.tolist()
-        perturbed_x_ids = perturbed_x_ids.cpu().numpy().tolist()
-        print(padded_src)
-        print(perturbed_x_ids)
-        for i in range(len(padded_src)):
-            src = [label for label in padded_src[i] if label != PAD]
-            perturbed_src = [label for label in perturbed_x_ids[i] if label != PAD]
-            edit_bleu += [bleu.sentence_bleu(references=[src], hypothesis=perturbed_src)]
-        print("edit_bleu: ", edit_bleu)
-        summary_writer.add_scalar("edit_bleu",
-                                  scalar_value=sum(edit_bleu)/len(edit_bleu),
-                                  global_step=episode_count)
-        time.sleep(10)
+            # calculate final BLEU degredation:
+            perturbed_bleu = []
+            for i, sent in enumerate(env.seqs_y):
+                # sentence is still surviving
+                perturbed_bleu.append(
+                    bleu.sentence_bleu(references=[sent], hypothesis=perturbed_result[i]))
+            print("origin_bleu:", env.origin_bleu)
+            print("perturbed_bleu: ", perturbed_bleu)
+            bleu_degrade = (sum(env.origin_bleu)-sum(perturbed_bleu))/len(perturbed_bleu)
+
+            summary_writer.add_scalar("bleu_degradation",
+                                      scalar_value=bleu_degrade,
+                                      global_step=episode_count)
+
+            # edit BLEU
+            edit_bleu = []
+            padded_src = padded_src.tolist()
+            perturbed_x_ids = perturbed_x_ids.cpu().numpy().tolist()
+
+            trans_x = trans_from_vocab(src_vocab, padded_src)
+            trans_x_p = trans_from_vocab(src_vocab, perturbed_x_ids)
+            print(trans_x)
+            print(trans_x_p)
+
+            for i in range(len(padded_src)):
+                src = [label for label in padded_src[i] if label != PAD]
+                perturbed_src = [label for label in perturbed_x_ids[i] if label != PAD]
+                edit_bleu += [bleu.sentence_bleu(references=[src], hypothesis=perturbed_src)]
+            print("edit_bleu: ", edit_bleu)
+            summary_writer.add_scalar("edit_bleu",
+                                      scalar_value=sum(edit_bleu)/len(edit_bleu),
+                                      global_step=episode_count)
+
+            # output enhanced results to log files
+            for i in range(len(perturbed_bleu)):
+                if perturbed_bleu[i] > env.origin_bleu[i]:
+                    src_f.write(trans_x[i] + "\n")
+                    src_pert.write(trans_x_p[i] + "\n")
+                    trg_f.write(trg_y[i] + "\n")
+                    trans_origin.write(trans_y[i] + "\n")
+                    trans_pert.write(trans_y_p[i] + "\n")
+
+            time.sleep(5)
 
 
 def train(rank, device, args, counter, lock,
           attack_configs, discriminator_configs,
           src_vocab, trg_vocab, data_iterator,
           global_attacker, attacker_configs,
-          attacker_optimizer_configs,
-          optimizer=None, scheduler=None, saver=None, patience=2):
+          optimizer=None, scheduler=None, saver=None):
     """
     running train process
     #1# train the env_discriminator
@@ -291,7 +330,7 @@ def train(rank, device, args, counter, lock,
     :param counter: python multiprocess variable
     :param lock: python multiprocess variable
     :param args: global args
-    :param attack_configs: attacker configurations
+    :param attack_configs: attack settings
     :param discriminator_configs: discriminator settings
     :param src_vocab:
     :param trg_vocab:
@@ -303,20 +342,19 @@ def train(rank, device, args, counter, lock,
             use local one if none
     :param scheduler: uses shared scheduler for the attacker,
             use local one if none
-    :param model saver
+    :param saver: model saver
     :return:
     """
-    trust_acc = acc_bound = 0.85
+    trust_acc = acc_bound = discriminator_configs["acc_bound"]
+    patience = discriminator_configs["patience"]
+    attacker_model_configs = attacker_configs["attacker_model_configs"]
+    attacker_optimizer_configs = attacker_configs["attacker_optimizer_configs"]
+
     torch.manual_seed(GlobalNames.SEED + rank)
-    env = Translate_Env(attack_configs=attack_configs,
-                        discriminator_configs=discriminator_configs,
-                        src_vocab=src_vocab, trg_vocab=trg_vocab,
-                        data_iterator=data_iterator,
-                        save_to=args.save_to, device=device)
+
     summary_writer = SummaryWriter(log_dir=os.path.join(args.save_to, "train_env%d" % rank))
     local_attacker = attacker.Attacker(src_vocab.max_n_words,
-                                       **attacker_configs)
-
+                                       **attacker_model_configs)
     # build optimizer for attacker
     if optimizer is None:
         optimizer = Optimizer(name=attacker_optimizer_configs["optimizer"],
@@ -341,147 +379,154 @@ def train(rank, device, args, counter, lock,
         else:
             scheduler = None
 
-    padded_src = env.reset()
-    padded_src = torch.from_numpy(padded_src)
-    if device != "cpu":
-        padded_src = padded_src.to(device)
-
-    done = True
-    episode_count = 0
-    episode_length = 0
-    local_steps = 0  # optimization steps
-    discriminator_base_steps = local_steps
-    patience_t = patience
     while True:
-        # check for update of discriminator
-        # if env.acc_validation(local_attacker, use_gpu=True if env.device != "cpu" else False) < 0.55:
-        if episode_count % 150 == 0:
-            while True:
+        env = Translate_Env(attack_configs=attack_configs,
+                            discriminator_configs=discriminator_configs,
+                            src_vocab=src_vocab, trg_vocab=trg_vocab,
+                            data_iterator=data_iterator,
+                            save_to=args.save_to, device=device)
+        padded_src = env.reset()
+        padded_src = torch.from_numpy(padded_src)
+        if device != "cpu":
+            padded_src = padded_src.to(device)
+
+        done = True
+        episode_count = 0
+        episode_length = 0
+        local_steps = 0  # optimization steps
+        discriminator_base_steps = local_steps
+        patience_t = patience
+        while True:
+            # check for update of discriminator
+            # if env.acc_validation(local_attacker, use_gpu=True if env.device != "cpu" else False) < 0.55:
+            if episode_count % attacker_configs["attacker_update_steps"] == 0:
                 """ stop criterion:
                 when updates a discriminator, we check for acc. If acc fails acc_bound,
                 we reset the discriminator and try, until acc reaches the bound with patience.
                 otherwise the training thread stops
                 """
                 discriminator_base_steps, trust_acc = env.update_discriminator(data_iterator,
-                                                     local_attacker,
-                                                     discriminator_base_steps,
-                                                     min_update_steps=10,
-                                                     max_update_steps=80,
-                                                     accuracy_bound=acc_bound,
-                                                     summary_writer=summary_writer)
+                                                                               local_attacker,
+                                                                               discriminator_base_steps,
+                                                                               min_update_steps=discriminator_configs[
+                                                                                   "acc_valid_freq"],
+                                                                               max_update_steps=discriminator_configs[
+                                                                                   "discriminator_update_steps"],
+                                                                               accuracy_bound=acc_bound,
+                                                                               summary_writer=summary_writer)
                 discriminator_base_steps += 1  # a flag to label the discriminator updates
-                if trust_acc > 0.55:  # discriminator updated
-                    break
-                else:  # GAN target reached
-                    INFO("Reset discriminator")
-                    env.reset_discriminator()
+                if trust_acc < 0.55:  # GAN target reached
                     patience_t -= 1
-                    if patience_t == 0:
-                        break
-        if patience_t == 0:
-            WARN("Training Thread should stop")
-            break
-        else:  # refresh patience
-            patience_t = patience
+                    INFO("discriminator reached GAN convergence bound: %d times" % patience_t)
+                else:  # reset patience if discriminator is refreshed
+                    patience_t = patience
 
-        if saver and local_steps % 50 == 0:
-            saver.save(global_step=local_steps,
-                       model=global_attacker,
-                       optim=optimizer,
-                       lr_scheduler=scheduler)
+            if saver and local_steps % 50 == 0:
+                saver.save(global_step=local_steps,
+                           model=global_attacker,
+                           optim=optimizer,
+                           lr_scheduler=scheduler)
 
-        local_attacker.train()  # switch back to training mode
-
-        # for a initial (reset) attacker from global parameters
-        if done:
-            INFO("sync from global model")
-            local_attacker.load_state_dict(global_attacker.state_dict())
-        # move the local attacker params back to device after updates
-        local_attacker = local_attacker.to(device)
-        values = []  # training critic: network outputs
-        log_probs = []
-        rewards = []  # actual rewards
-        entropies = []
-
-        local_steps += 1
-        # run sequences step of attack
-        for i in range(args.action_roll_steps):
-            episode_length += 1
-            attack_out, critic_out = local_attacker(padded_src, padded_src[:, env.index-1:env.index+1])
-
-            logit_attack_out = torch.log(attack_out)
-            entropy = -(attack_out * logit_attack_out).sum(dim=-1).mean()
-
-            summary_writer.add_scalar("action_entropy", scalar_value=entropy, global_step=local_steps)
-            entropies.append(entropy)  # for entropy loss
-            actions = attack_out.multinomial(num_samples=1).detach()
-            # only extract the log prob for chosen action (avg over batch)
-            log_attack_out = logit_attack_out.gather(-1, actions).mean()
-            padded_src, reward, terminal_signal = env.step(actions.squeeze())
-            done = terminal_signal or episode_length > args.max_episode_lengths
-
-            with lock:
-                counter.value += 1
-
-            if done:
-                episode_length = 0
-                padded_src = env.reset()
-
-            padded_src = torch.from_numpy(padded_src)
-            if device != "cpu":
-                padded_src = padded_src.to(device)
-
-            values.append(critic_out)  # list of torch variables (scalar)
-            log_probs.append(log_attack_out)  # list of torch variables (scalar)
-            rewards.append(reward)  # list of reward variables
-
-            if done:
-                episode_count += 1
+            if patience_t == 0:
+                WARN("maximum patience reached. Training Thread should stop")
                 break
 
-        R = torch.zeros(1, 1)
-        gae = torch.zeros(1, 1)
-        if device != "cpu":
-            R = R.cuda()
-            gae = gae.cuda()
+            local_attacker.train()  # switch back to training mode
 
-        if not done:  # calculate value loss
-            value = local_attacker.get_critic(padded_src, padded_src[:, env.index-1:env.index+1])
-            R = value.detach()
+            # for a initial (reset) attacker from global parameters
+            if done:
+                INFO("sync from global model")
+                local_attacker.load_state_dict(global_attacker.state_dict())
+            # move the local attacker params back to device after updates
+            local_attacker = local_attacker.to(device)
+            values = []  # training critic: network outputs
+            log_probs = []
+            rewards = []  # actual rewards
+            entropies = []
 
-        values.append(R)
-        policy_loss = 0
-        value_loss = 0
+            local_steps += 1
+            # run sequences step of attack
+            for i in range(args.action_roll_steps):
+                episode_length += 1
+                attack_out, critic_out = local_attacker(padded_src, padded_src[:, env.index - 1:env.index + 1])
 
-        for i in reversed((range(len(rewards)))):
-            R = attack_configs["gamma"] * R+rewards[i]
-            advantage = R-values[i]
-            value_loss = value_loss + 0.5 * advantage.pow(2)
+                logit_attack_out = torch.log(attack_out)
+                entropy = -(attack_out * logit_attack_out).sum(dim=-1).mean()
 
-            delta_t = rewards[i] + attack_configs["gamma"] * \
-                      values[i+1]-values[i]
-            gae = gae * attack_configs["gamma"] * attack_configs["tau"] +\
-                  delta_t
-            policy_loss = policy_loss - log_probs[i] * gae.detach() - \
-                           attack_configs["entropy_coef"] * entropies[i]
-            print("policy_loss", policy_loss)
-            print("gae", gae)
+                summary_writer.add_scalar("action_entropy", scalar_value=entropy, global_step=local_steps)
+                entropies.append(entropy)  # for entropy loss
+                actions = attack_out.multinomial(num_samples=1).detach()
+                # only extract the log prob for chosen action (avg over batch)
+                log_attack_out = logit_attack_out.gather(-1, actions).mean()
+                padded_src, reward, terminal_signal = env.step(actions.squeeze())
+                done = terminal_signal or episode_length > args.max_episode_lengths
 
-        # update with optimizer
-        optimizer.zero_grad()
-        # we decay the loss according to discriminator's accuracy as a trust region constrain
-        summary_writer.add_scalar("policy_loss", scalar_value=policy_loss * trust_acc, global_step=local_steps)
-        summary_writer.add_scalar("value_loss", scalar_value=value_loss * trust_acc, global_step=local_steps)
-        (policy_loss + attack_configs["value_coef"] * value_loss).backward()
+                with lock:
+                    counter.value += 1
 
-        if attacker_optimizer_configs["schedule_method"] is not None and attacker_optimizer_configs["schedule_method"] != "loss":
-            scheduler.step(global_step=local_steps)
+                if done:
+                    episode_length = 0
+                    padded_src = env.reset()
 
-        # move the model params to CPU and
-        # assign local gradients to the global model to update
-        local_attacker.to("cpu").ensure_shared_grads(global_attacker)
-        optimizer.step()
-        print("bingo!")
+                padded_src = torch.from_numpy(padded_src)
+                if device != "cpu":
+                    padded_src = padded_src.to(device)
+
+                values.append(critic_out)  # list of torch variables (scalar)
+                log_probs.append(log_attack_out)  # list of torch variables (scalar)
+                rewards.append(reward)  # list of reward variables
+
+                if done:
+                    episode_count += 1
+                    break
+
+            R = torch.zeros(1, 1)
+            gae = torch.zeros(1, 1)
+            if device != "cpu":
+                R = R.cuda()
+                gae = gae.cuda()
+
+            if not done:  # calculate value loss
+                value = local_attacker.get_critic(padded_src, padded_src[:, env.index - 1:env.index + 1])
+                R = value.detach()
+
+            values.append(R)
+            policy_loss = 0
+            value_loss = 0
+
+            for i in reversed((range(len(rewards)))):
+                R = attack_configs["gamma"] * R + rewards[i]
+                advantage = R - values[i]
+                value_loss = value_loss + 0.5 * advantage.pow(2)
+
+                delta_t = rewards[i] + attack_configs["gamma"] * \
+                          values[i + 1] - values[i]
+                gae = gae * attack_configs["gamma"] * attack_configs["tau"] + \
+                      delta_t
+                policy_loss = policy_loss - log_probs[i] * gae.detach() - \
+                              attack_configs["entropy_coef"] * entropies[i]
+                print("policy_loss", policy_loss)
+                print("gae", gae)
+
+            # update with optimizer
+            optimizer.zero_grad()
+            # we decay the loss according to discriminator's accuracy as a trust region constrain
+            summary_writer.add_scalar("policy_loss", scalar_value=policy_loss * trust_acc, global_step=local_steps)
+            summary_writer.add_scalar("value_loss", scalar_value=value_loss * trust_acc, global_step=local_steps)
+            (policy_loss + attack_configs["value_coef"] * value_loss).backward()
+
+            if attacker_optimizer_configs["schedule_method"] is not None and attacker_optimizer_configs[
+                "schedule_method"] != "loss":
+                scheduler.step(global_step=local_steps)
+
+            # move the model params to CPU and
+            # assign local gradients to the global model to update
+            local_attacker.to("cpu").ensure_shared_grads(global_attacker)
+            optimizer.step()
+            print("bingo!")
+
+        if patience_t == 0:
+            break
 
 
 if __name__ == "__main__":
