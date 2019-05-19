@@ -20,7 +20,7 @@ parser = argparse.ArgumentParser()
 parser.add_argument("--n", type=int, default=1,
                     help="parallel attacker process (default as 1)")
 parser.add_argument("--config_path", type=str,
-                    default="/home/zouw/pycharm_project_NMT_torch/configs/nist_zh2en_attack_dl4mt.yaml",
+                    default="/home/zouw/pycharm_project_NMT_torch/configs/nist_zh2en_attack.yaml",
                     help="the path to attack config file.")
 # parser.add_argument("--data_path", type=str, default=None,
 #                     help="text_data for environments, default as None (for training Mode)")
@@ -30,7 +30,7 @@ parser.add_argument("--max_episode_lengths", type=int, default=200,
                     help="maximum steps for attack (default as 200)")
 parser.add_argument("--max_episodes", type=int, default=500000,
                     help="maximum environment episode for training (default as 500k)")
-parser.add_argument("--save_to", type=str, default="./attack_dl4mt_log",
+parser.add_argument("--save_to", type=str, default="./attack_log",
                     help="the path for model-saving and log saving.")
 parser.add_argument("--use_gpu", action="store_true", default=False,
                     help="Whether to use GPU.(default as false)")
@@ -71,20 +71,15 @@ def run():
     data_configs = victim_configs["data_configs"]
     src_vocab = Vocabulary(**data_configs["vocabularies"][0])
     trg_vocab = Vocabulary(**data_configs["vocabularies"][1])
-
     data_set = ZipDataset(
         TextLineDataset(data_path=data_configs["train_data"][0],
                         vocabulary=src_vocab,),
         TextLineDataset(data_path=data_configs["train_data"][1],
                         vocabulary=trg_vocab,),
         shuffle=True
-    )  # this is basically a validation setting for translation
-    data_iterator = DataIterator(dataset=data_set,
-                                 batch_size=training_configs["valid_batch_size"],
-                                 use_bucket=True,
-                                 buffer_size=100000,
-                                 numbering=True).build_generator()
-    # global model variables (trg network)
+    )  # we build the parallel data sets and iterate inside of thread
+
+    # global model variables (trg network to save the results)
     global_attacker = attacker.Attacker(src_vocab.max_n_words,
                                         **attacker_model_configs)
     global_attacker = global_attacker.cpu()
@@ -136,45 +131,47 @@ def run():
 
     train(0, device, args, counter, lock,
           attack_configs, discriminator_configs,
-          src_vocab, trg_vocab, data_iterator,
+          src_vocab, trg_vocab, data_set,
           global_attacker, attacker_configs,
           optimizer, scheduler,
           checkpoint_saver)
-    test(args.n, "cuda:0", args,
-         attack_configs, discriminator_configs,
-         src_vocab, trg_vocab, data_iterator,
-         global_attacker, attacker_model_configs, counter)
 
-    # # run the attack test for initiation
-    # p = mp.Process(target=test,
-    #                args=(args.n, "cuda:0", args,
-    #                      attack_configs, discriminator_configs,
-    #                      src_vocab, trg_vocab, data_iterator,
-    #                      global_attacker, attack_configs,
-    #                      counter)
-    #                )
-    # p.start()
-    # process.append(p)
+    valid(args.n, "cuda:0", args,
+         attack_configs, discriminator_configs,
+         src_vocab, trg_vocab, data_set,
+         global_attacker, attacker_configs, counter)
+
     # # run multiple training process of local attacker to update global one
     # for rank in range(args.n):
     #     p = mp.Process(target=train,
     #                    args=(rank, "cuda:%d" % (rank+1), args, counter, lock,
     #                          attack_configs, discriminator_configs,
-    #                          src_vocab, trg_vocab, data_iterator,
+    #                          src_vocab, trg_vocab, data_set,
     #                          global_attacker, attacker_configs,
     #                          optimizer, scheduler,
     #                          checkpoint_saver))
     #     p.start()
     #     process.append(p)
+    # # run the attack test for initiation
+    # p = mp.Process(target=valid,
+    #                args=(args.n, "cuda:0", args,
+    #                      attack_configs, discriminator_configs,
+    #                      src_vocab, trg_vocab, data_set,
+    #                      global_attacker, attacker_configs,
+    #                      counter)
+    #                )
+    # p.start()
+    # process.append(p)
+    #
     # for p in process:
     #     p.join()
 
 
-def test(rank, device, args,
-         attack_configs, discriminator_configs,
-         src_vocab, trg_vocab, data_iterator,
-         global_attacker, attacker_configs,
-         counter):
+def valid(rank, device, args,
+          attack_configs, discriminator_configs,
+          src_vocab, trg_vocab, data_set,
+          global_attacker, attacker_configs,
+          counter):
     """
     for test thread (runs the network results) we simply runs the attacker
     on batch of sequences on the environment using current global attaker
@@ -186,25 +183,32 @@ def test(rank, device, args,
     :param discriminator_configs: initiate env
     :param src_vocab: initiate env
     :param trg_vocab: initiate env
-    :param data_iterator: shared by all envs and provides data set
+    :param data_set: provides data set for iterator
     :param global_attacker: global attacker models
-    :param attacker_configs: initiate local attacker model configs
+    :param attacker_configs: initiate local attacker configs
     :param counter: multiprocessing counter
     :return:
     """
     torch.manual_seed(GlobalNames.SEED + rank)
+    attacker_model_configs = attacker_configs["attacker_model_configs"]
+    valid_iterator = DataIterator(dataset=data_set,
+                                  batch_size=attacker_configs["attacker_batch"],
+                                  use_bucket=True,
+                                  buffer_size=100000,
+                                  numbering=True)
+    valid_iterator = valid_iterator.build_generator()
     env = Translate_Env(attack_configs=attack_configs,
                         discriminator_configs=discriminator_configs,
                         src_vocab=src_vocab,
                         trg_vocab=trg_vocab,
-                        data_iterator=data_iterator,
+                        data_iterator=valid_iterator,
                         save_to=args.save_to, device="cuda")
-    print("finish build env")
+    INFO("finish building validation env")
     # need a directory for saving and loading
     summary_writer = SummaryWriter(log_dir=os.path.join(args.save_to, "test_env"))
 
     local_attacker = attacker.Attacker(src_vocab.max_n_words,
-                                       **attacker_configs)
+                                       **attacker_model_configs)
     if device != "cpu":
         local_attacker.cuda()
     local_attacker.eval()
@@ -233,7 +237,7 @@ def test(rank, device, args,
             local_attacker.load_state_dict(global_attacker.state_dict())
             episode_count += 1
 
-            perturbed_x_ids = env.padded_src.clone()
+            perturbed_x_ids = env.padded_src.clone().detach()
             # print(perturbed_x_ids)
             mask = perturbed_x_ids.detach().eq(PAD).long()
             # print(mask)
@@ -245,7 +249,6 @@ def test(rank, device, args,
                     actions = attack_out.argmax(dim=-1)
                     actions_entropy = -(attack_out * torch.log(attack_out)).sum(dim=-1).mean()
                     summary_writer.add_scalar("action_entropy", scalar_value=actions_entropy.item(), global_step=episode_count)
-                    # value = local_attacker.get_critic(x=perturbed_x_ids, label=inputs)*actions
                     target_of_step = []
                     for batch_index in range(batch_size):
                         word_id = inputs[batch_index][1]
@@ -316,7 +319,7 @@ def test(rank, device, args,
 
 def train(rank, device, args, counter, lock,
           attack_configs, discriminator_configs,
-          src_vocab, trg_vocab, data_iterator,
+          src_vocab, trg_vocab, data_set,
           global_attacker, attacker_configs,
           optimizer=None, scheduler=None, saver=None):
     """
@@ -334,10 +337,9 @@ def train(rank, device, args, counter, lock,
     :param discriminator_configs: discriminator settings
     :param src_vocab:
     :param trg_vocab:
-    :param data_iterator: (data_iterator object) provide batched data labels
+    :param data_set: (data_iterator object) provide batched data labels
     :param global_attacker: the model to sync from
     :param attacker_configs: local attacker settings
-    :param attacker_optimizer_configs: configs for attacker
     :param optimizer: uses shared optimizer for the attacker
             use local one if none
     :param scheduler: uses shared scheduler for the attacker,
@@ -351,6 +353,12 @@ def train(rank, device, args, counter, lock,
     attacker_optimizer_configs = attacker_configs["attacker_optimizer_configs"]
 
     torch.manual_seed(GlobalNames.SEED + rank)
+
+    attack_iterator = DataIterator(dataset=data_set,
+                                   batch_size=attacker_configs["attacker_batch"],
+                                   use_bucket=True,
+                                   buffer_size=100000,
+                                   numbering=True)
 
     summary_writer = SummaryWriter(log_dir=os.path.join(args.save_to, "train_env%d" % rank))
     local_attacker = attacker.Attacker(src_vocab.max_n_words,
@@ -379,12 +387,16 @@ def train(rank, device, args, counter, lock,
         else:
             scheduler = None
 
+    attacker_iterator = attack_iterator.build_generator()
+    env = Translate_Env(attack_configs=attack_configs,
+                        discriminator_configs=discriminator_configs,
+                        src_vocab=src_vocab, trg_vocab=trg_vocab,
+                        data_iterator=attacker_iterator,
+                        save_to=args.save_to, device=device)
+
     while True:
-        env = Translate_Env(attack_configs=attack_configs,
-                            discriminator_configs=discriminator_configs,
-                            src_vocab=src_vocab, trg_vocab=trg_vocab,
-                            data_iterator=data_iterator,
-                            save_to=args.save_to, device=device)
+        attacker_iterator = attack_iterator.build_generator()
+        env.reset_data_iter(attacker_iterator)
         padded_src = env.reset()
         padded_src = torch.from_numpy(padded_src)
         if device != "cpu":
@@ -405,17 +417,23 @@ def train(rank, device, args, counter, lock,
                 we reset the discriminator and try, until acc reaches the bound with patience.
                 otherwise the training thread stops
                 """
-                discriminator_base_steps, trust_acc = env.update_discriminator(data_iterator,
-                                                                               local_attacker,
-                                                                               discriminator_base_steps,
-                                                                               min_update_steps=discriminator_configs[
-                                                                                   "acc_valid_freq"],
-                                                                               max_update_steps=discriminator_configs[
-                                                                                   "discriminator_update_steps"],
-                                                                               accuracy_bound=acc_bound,
-                                                                               summary_writer=summary_writer)
+                try:
+                    discriminator_base_steps, trust_acc = env.update_discriminator(
+                        attack_iterator,
+                        local_attacker,
+                        discriminator_base_steps,
+                        min_update_steps=discriminator_configs[
+                            "acc_valid_freq"],
+                        max_update_steps=discriminator_configs[
+                            "discriminator_update_steps"],
+                        accuracy_bound=acc_bound,
+                        summary_writer=summary_writer)
+                except StopIteration:
+                    INFO("finish one training epoch, reset data_iterator")
+                    break
+
                 discriminator_base_steps += 1  # a flag to label the discriminator updates
-                if trust_acc < 0.55:  # GAN target reached
+                if trust_acc < 0.51:  # GAN target reached
                     patience_t -= 1
                     INFO("discriminator reached GAN convergence bound: %d times" % patience_t)
                 else:  # reset patience if discriminator is refreshed
@@ -446,39 +464,42 @@ def train(rank, device, args, counter, lock,
 
             local_steps += 1
             # run sequences step of attack
-            for i in range(args.action_roll_steps):
-                episode_length += 1
-                attack_out, critic_out = local_attacker(padded_src, padded_src[:, env.index - 1:env.index + 1])
+            try:
+                for i in range(args.action_roll_steps):
+                    episode_length += 1
+                    attack_out, critic_out = local_attacker(padded_src, padded_src[:, env.index - 1:env.index + 1])
+                    logit_attack_out = torch.log(attack_out)
+                    entropy = -(attack_out * logit_attack_out).sum(dim=-1).mean()
 
-                logit_attack_out = torch.log(attack_out)
-                entropy = -(attack_out * logit_attack_out).sum(dim=-1).mean()
+                    summary_writer.add_scalar("action_entropy", scalar_value=entropy, global_step=local_steps)
+                    entropies.append(entropy)  # for entropy loss
+                    actions = attack_out.multinomial(num_samples=1).detach()
+                    # only extract the log prob for chosen action (avg over batch)
+                    log_attack_out = logit_attack_out.gather(-1, actions).mean()
+                    padded_src, reward, terminal_signal = env.step(actions.squeeze())
+                    done = terminal_signal or episode_length > args.max_episode_lengths
 
-                summary_writer.add_scalar("action_entropy", scalar_value=entropy, global_step=local_steps)
-                entropies.append(entropy)  # for entropy loss
-                actions = attack_out.multinomial(num_samples=1).detach()
-                # only extract the log prob for chosen action (avg over batch)
-                log_attack_out = logit_attack_out.gather(-1, actions).mean()
-                padded_src, reward, terminal_signal = env.step(actions.squeeze())
-                done = terminal_signal or episode_length > args.max_episode_lengths
+                    with lock:
+                        counter.value += 1
 
-                with lock:
-                    counter.value += 1
+                    if done:
+                        episode_length = 0
+                        padded_src = env.reset()
 
-                if done:
-                    episode_length = 0
-                    padded_src = env.reset()
+                    padded_src = torch.from_numpy(padded_src)
+                    if device != "cpu":
+                        padded_src = padded_src.to(device)
 
-                padded_src = torch.from_numpy(padded_src)
-                if device != "cpu":
-                    padded_src = padded_src.to(device)
+                    values.append(critic_out.mean())  # list of torch variables (scalar)
+                    log_probs.append(log_attack_out)  # list of torch variables (scalar)
+                    rewards.append(reward)  # list of reward variables
 
-                values.append(critic_out)  # list of torch variables (scalar)
-                log_probs.append(log_attack_out)  # list of torch variables (scalar)
-                rewards.append(reward)  # list of reward variables
-
-                if done:
-                    episode_count += 1
-                    break
+                    if done:
+                        episode_count += 1
+                        break
+            except StopIteration:
+                INFO("finish one training epoch, reset data_iterator")
+                break
 
             R = torch.zeros(1, 1)
             gae = torch.zeros(1, 1)
@@ -488,12 +509,13 @@ def train(rank, device, args, counter, lock,
 
             if not done:  # calculate value loss
                 value = local_attacker.get_critic(padded_src, padded_src[:, env.index - 1:env.index + 1])
-                R = value.detach()
+                R = value.mean().detach()
 
             values.append(R)
             policy_loss = 0
             value_loss = 0
 
+            # collect values for training
             for i in reversed((range(len(rewards)))):
                 R = attack_configs["gamma"] * R + rewards[i]
                 advantage = R - values[i]
@@ -526,6 +548,7 @@ def train(rank, device, args, counter, lock,
             print("bingo!")
 
         if patience_t == 0:
+            INFO("Reach maximum Discriminator patience, Finish")
             break
 
 

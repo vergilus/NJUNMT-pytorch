@@ -13,7 +13,7 @@ __all__ = [
 random.seed(GlobalNames.SEED)
 
 DEFAULT_BUFFER_SIZE_FACTOR = 20
-
+import threading
 
 class Batch(object):
     """
@@ -141,6 +141,26 @@ def add_noise_to_length(lengths, noise=1.0):
     return noisy_lengths
 
 
+class threadsafe_iter(object):
+    # turn an iterator into thread-safe one
+    def __init__(self, iter):
+        self.iter = iter
+        self.lock = threading.Lock()
+
+    def __iter__(self):
+        return self
+
+    def __next__(self):
+        with self.lock:
+            return self.iter.__next__()
+
+def threadsafe_generator(f):
+    """A decorator that takes a generator function and makes it thread-safe.
+    """
+    def g(*a, **kw):
+        return threadsafe_iter(f(*a, **kw))
+    return g
+
 class DataIterator(object):
     """
     ```DataIterator``` defines the way to group your data into a batch. You can choose the way to batchify your data.
@@ -254,6 +274,7 @@ class DataIterator(object):
 
         self._end = False
 
+    # @threadsafe_generator
     def build_generator(self, batch_size=None):
         while True:
             # We re-allocate the buffer when there at most on batch.

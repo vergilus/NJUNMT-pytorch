@@ -98,7 +98,6 @@ class Attacker(nn.Module):
         attack_feature = self.preprocess(x, label)
         attack_out = F.softmax(self.dropout(self.attacker_linear(attack_feature)), dim=-1)
         critic_out = F.elu(self.dropout(self.critic_linear(attack_feature)))
-        critic_out = critic_out.mean()
         return attack_out, critic_out
 
     def get_attack(self, x, label):
@@ -123,7 +122,6 @@ class Attacker(nn.Module):
         # return value function of the current state
         attack_feature = self.preprocess(x, label)
         critic_out = F.elu(self.dropout(self.critic_linear(attack_feature)))
-        critic_out = critic_out.mean()
         return critic_out
 
     def seq_attack(self, seqs_x_ids, w2vocab, training_mode):

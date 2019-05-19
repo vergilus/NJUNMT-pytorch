@@ -1,22 +1,24 @@
 data_configs:
   lang_pair: "zh-en"
   train_data:
-    - "/home/user_data/weihr/NMT_DATA_PY3/NIST-ZH-EN/train/zh.txt"
-    - "/home/user_data/weihr/NMT_DATA_PY3/NIST-ZH-EN/train/en.txt"
+    - "/home/public_data/nmtdata/nist_zh-en_1.34m/train.zh"
+    - "/home/public_data/nmtdata/nist_zh-en_1.34m/train.en"
   valid_data:
-    - "/home/user_data/weihr/NMT_DATA_PY3/NIST-ZH-EN/test/mt03.src"
-    - "/home/user_data/weihr/NMT_DATA_PY3/NIST-ZH-EN/test/mt03.ref0"
-  bleu_valid_reference: "/home/user_data/weihr/NMT_DATA_PY3/NIST-ZH-EN/test/mt03.ref"
+    - "/home/public_data/nmtdata/nist_zh-en_1.34m/test/mt03.src"
+    - "/home/public_data/nmtdata/nist_zh-en_1.34m/test/mt03.ref0"
+  bleu_valid_reference: "/home/public_data/nmtdata/nist_zh-en_1.34m/test/mt03.ref"
   vocabularies:
-    - type: "word"
-      dict_path: "/home/user_data/weihr/NMT_DATA_PY3/NIST-ZH-EN/vocab/zh.json"
-      max_n_words: 30000
-    - type: "word"
-      dict_path: "/home/user_data/weihr/NMT_DATA_PY3/NIST-ZH-EN/vocab/en.json"
-      max_n_words: 30000
+    - type: "bpe"
+      dict_path: "/home/public_data/nmtdata/nist_zh-en_1.34m/vocab.zh.bpe.json"
+      codes: "/home/public_data/nmtdata/nist_zh-en_1.34m/codes.30k.zh"
+      max_n_words: -1
+    - type: "bpe"
+      dict_path: "/home/public_data/nmtdata/nist_zh-en_1.34m/vocab.en.bpe.json"
+      max_n_words: -1
+      codes: "/home/public_data/nmtdata/nist_zh-en_1.34m/codes.30k.en"
   max_len:
-    - 80
-    - 80
+    - 128
+    - 128
   num_refs: 4
   eval_at_char_level: false
 

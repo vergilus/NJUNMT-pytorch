@@ -1,7 +1,7 @@
 attack_configs:
   seed: 1234
-  victim_model: "/home/user_data/zouw/Models/save_zhen_bpe/transformer.best.final"
-  victim_configs: "/home/user_data/zouw/Models/transformer_nist_zh2en_bpe.yaml"
+  victim_model: "/home/user_data/zouw/Models/save_dl4mt_zhen_bpe/dl4mt.best.final"
+  victim_configs: "/home/user_data/zouw/Models/dl4mt_nist_zh2en_bpe.yaml"
   init_perturb_rate: 0.4
   gamma: 0.99
   tau: 1.0
@@ -9,7 +9,7 @@ attack_configs:
   value_coef: 0.5
 
 attacker_configs:
-  attacker_update_steps: 120
+  attacker_update_steps: 100
   attacker_batch: 50
   attacker_model_configs:
     action_space: 2
@@ -34,7 +34,7 @@ discriminator_data_configs:
   - "/home/user_data/weihr/NMT_DATA_PY3/NIST-ZH-EN/test/mt03.ref0"
 
 discriminator_configs:
-  discriminator_update_steps: 80
+  discriminator_update_steps: 60
   discriminator_batch: 50
   acc_bound: 0.85
   acc_valid_freq: 10

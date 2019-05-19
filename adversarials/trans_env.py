@@ -155,8 +155,7 @@ class Translate_Env(object):
         """
         self.index = 1
         self.origin_bleu = []
-
-        batch = self.data_iterator.__next__()
+        batch = next(self.data_iterator)
         assert len(batch) == 3, "must be provided with line index (check for data_iterator)"
         # training, parallel trg is provided
         _, seqs_x, self.seqs_y = batch
@@ -178,6 +177,10 @@ class Translate_Env(object):
 
     def reset(self):
         return self._init_state()
+
+    def reset_data_iter(self, data_iter):  # reset data iterator with provided iterator
+        self.data_iterator = data_iter
+        return
 
     def reset_discriminator(self):
         self.discriminator.reset()
@@ -272,7 +275,10 @@ class Translate_Env(object):
         acc = 0
         sample_count = 0
         for i in range(5):
-            batch = self.data_iterator.__next__()
+            try:
+                batch = next(self.data_iterator)
+            except StopIteration:
+                batch = next(self.data_iterator)
             seq_nums, seqs_x, seqs_y = batch
             x, y, flags = self.prepare_D_data(attacker,
                                               seqs_x, seqs_y, use_gpu)
@@ -336,7 +342,10 @@ class Translate_Env(object):
         attacker_model = attacker_model.to(self.device)
         step = 0
         while True:
-            batch = data_iterator.__next__()
+            try:
+                batch = next(self.data_iterator)
+            except StopIteration:
+                batch = next(self.data_iterator)
             # update the discriminator
             step += 1
             if self.scheduler_D is not None:
@@ -468,7 +477,8 @@ class Translate_Env(object):
                 for i, sent in enumerate(self.seqs_y):
                     # sentence is still surviving
                     if self.index >= self.sent_len[i]-1 and self.terminal_signal[i] == 0:
-                        bleu_degrade.append(self.origin_bleu[i]-bleu.sentence_bleu(references=[sent],                                                           hypothesis=perturbed_result[i]))
+                        degraded_value = self.origin_bleu[i]-bleu.sentence_bleu(references=[sent],hypothesis=perturbed_result[i])
+                        bleu_degrade.append(degraded_value)
                     else:
                         bleu_degrade.append(0.0)
                 reward += sum(bleu_degrade) * 10
