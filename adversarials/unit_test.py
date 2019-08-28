@@ -15,9 +15,9 @@ EOS = Vocabulary.EOS
 PAD = Vocabulary.PAD
 
 configs_path = [
-    "/home/public_data/nmtdata/nmt-baselines/transformer-wmt15-enfr/small_baseline/transformer_wmt15_en2fr.yaml",
+    "/home/public_data/nmtdata/nmt-baselines/transformer-wmt15-enfr/small_baseline/transformer_wmt15_en2de.yaml",
     "/home/zouw/NJUNMT-pytorch/configs/transformer_nist_zh2en_bpe.yaml",
-    "/home/zouw/pycharm_project_NMT_torch/configs/wmt_en2fr_attack.yaml",
+    "/home/zouw/pycharm_project_NMT_torch/configs/wmt_en2de_attack.yaml",
     "/home/zouw/pycharm_project_NMT_torch/configs/nist_zh2en_attack.yaml"]
 
 
@@ -431,9 +431,34 @@ def test_attack(config_path,
 # test_discriminator(config_path=configs_path[2],
 #                    save_to="./Discriminator_enfr",
 #                    model_name="Discriminator")
+ref_path = "/home/public_data/nmtdata/nist_zh-en_1.34m/test/mt03.src"
+answ_path = "attack_zh2en_tf_log/no_UNK_attack/mt02/perturbed_src"
+answ_path = "/home/zouw/pycharm_project_NMT_torch/adversarials/search35_attack_mt03"
 
+def charF(ref_path, answ_path, beta=1):
+    with open(ref_path, "r") as refs, open(answ_path, "r") as answ:
+        # break down everything to char and calculate F_score
+        collect_F1 = []
+        intersect_count = 0.
+        ref_count = 0.
+        answ_count = 0.
 
-test_attack(config_path=configs_path[2],
-            save_to="./Attacker_enfr",
-            model_name="Attacker")
+        for ref_line, answ_line in zip(refs, answ):
+            ref_line = [ word for word in ref_line.strip().split()]  # if word not in ["<UNK>", "<PAD>"]
+            answ_line =[ word for word in answ_line.strip().split()]  #  if word not in ["<UNK>", "<PAD>"]
+            ref_line = "".join(ref_line)
+            answ_line = "".join(answ_line)
+            ref_set = set(list(ref_line))
+            answ_set = set(list(answ_line))
+            print(ref_line, answ_line)
+            intersect_count += len(ref_set.intersection(answ_set))
+            ref_count+=len(ref_set)
+            answ_count+=len(answ_set)
 
+        total_p = intersect_count/answ_count
+        total_r = intersect_count/ref_count
+        # charF_score = 1/(0.5/total_p+0.5/total_r)
+        charF_score = (1+beta**2)*total_p*total_r/(beta**2*total_p+total_r)
+        return charF_score
+
+print(charF(ref_path, answ_path, 1))

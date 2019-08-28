@@ -8,6 +8,6 @@ python -m  src.bin.train \
     --model_name "transformer" \
     --reload \
     --config_path "./configs/transformer_nist_zh2en_bpe.yaml" \
-    --log_path "./log" \
-    --saveto "./save/" \
+    --log_path "./scripts/log_tf_zh2en" \
+    --saveto "./scripts/save_tf_zh2en" \
     --use_gpu

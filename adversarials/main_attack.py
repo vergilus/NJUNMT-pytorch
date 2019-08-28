@@ -20,18 +20,16 @@ parser = argparse.ArgumentParser()
 parser.add_argument("--n", type=int, default=1,
                     help="parallel attacker process (default as 1)")
 parser.add_argument("--config_path", type=str,
-                    default="/home/zouw/pycharm_project_NMT_torch/configs/nist_zh2en_attack.yaml",
+                    default="/home/zouw/pycharm_project_NMT_torch/configs/attack_zh2en.yaml",
                     help="the path to attack config file.")
-# parser.add_argument("--data_path", type=str, default=None,
-#                     help="text_data for environments, default as None (for training Mode)")
+parser.add_argument("--save_to", type=str, default="./attack_en2de_dl4mt_log",
+                    help="the path for model-saving and log saving.")
 parser.add_argument("--action_roll_steps", type=int, default=15,
                     help="training rolling steps (default as 15)")
 parser.add_argument("--max_episode_lengths", type=int, default=200,
                     help="maximum steps for attack (default as 200)")
 parser.add_argument("--max_episodes", type=int, default=500000,
                     help="maximum environment episode for training (default as 500k)")
-parser.add_argument("--save_to", type=str, default="./attack_log",
-                    help="the path for model-saving and log saving.")
 parser.add_argument("--use_gpu", action="store_true", default=False,
                     help="Whether to use GPU.(default as false)")
 parser.add_argument("--share_optim", action="store_true", default=False,
@@ -40,7 +38,7 @@ parser.add_argument("--seed", type=int, default=1,
                     help="random seed (default as 1)")
 
 def run():
-    # default threads as 1
+    # default actor threads as 1
     os.environ["OMP_NUM_THREADS"] = "1"
 
     args = parser.parse_args()
@@ -52,12 +50,11 @@ def run():
     attacker_configs = configs["attacker_configs"]
     attacker_model_configs = attacker_configs["attacker_model_configs"]
     attacker_optimizer_configs = attacker_configs["attacker_optimizer_configs"]
-    # discriminator_data_configs = configs["discriminator_data_configs"]
     discriminator_configs = configs["discriminator_configs"]
     training_configs = configs["training_configs"]
 
-    # initial checkpoint saver for global model
-    checkpoint_saver = Saver(save_prefix="{0}.ckpt".format(os.path.join(args.save_to, "A3Cmodel")),
+    # initial checkpoint saver and best saver for global model
+    checkpoint_saver = Saver(save_prefix="{0}.ckpt".format(os.path.join(args.save_to, "ACmodel")),
                              num_max_keeping=training_configs["num_kept_checkpoints"])
 
     GlobalNames.SEED = training_configs["seed"]
@@ -77,7 +74,7 @@ def run():
         TextLineDataset(data_path=data_configs["train_data"][1],
                         vocabulary=trg_vocab,),
         shuffle=True
-    )  # we build the parallel data sets and iterate inside of thread
+    )  # we build the parallel data sets and iterate inside a thread
 
     # global model variables (trg network to save the results)
     global_attacker = attacker.Attacker(src_vocab.max_n_words,
@@ -125,7 +122,7 @@ def run():
         device = "cpu"
         devices = [device]
 
-    process = []
+    # process = []
     counter = mp.Value("i", 0)
     lock = mp.Lock()  # for multiple attackers update
 
@@ -205,7 +202,7 @@ def valid(rank, device, args,
                         save_to=args.save_to, device="cuda")
     INFO("finish building validation env")
     # need a directory for saving and loading
-    summary_writer = SummaryWriter(log_dir=os.path.join(args.save_to, "test_env"))
+    summary_writer = SummaryWriter(log_dir=os.path.join(args.save_to, "dev_env"))
 
     local_attacker = attacker.Attacker(src_vocab.max_n_words,
                                        **attacker_model_configs)
@@ -226,11 +223,11 @@ def valid(rank, device, args,
         return result
 
     episode_count = 0
-    with open(os.path.join(args.save_to, "test_env/src_enhanced"), "w") as src_f, \
-            open(os.path.join(args.save_to, "test_env/src_pert"), "w") as src_pert, \
-            open(os.path.join(args.save_to, "test_env/trg_enhanced"), "w") as trg_f, \
-            open(os.path.join(args.save_to, "test_env/trans_origin"), "w") as trans_origin,\
-            open(os.path.join(args.save_to, "test_env/trans_pert"), "w") as trans_pert:
+    with open(os.path.join(args.save_to, "dev_env/src_enhanced"), "w") as src_f, \
+         open(os.path.join(args.save_to, "dev_env/src_pert"), "w") as src_pert, \
+         open(os.path.join(args.save_to, "dev_env/trg_enhanced"), "w") as trg_f, \
+         open(os.path.join(args.save_to, "dev_env/trans_origin"), "w") as trans_origin,\
+         open(os.path.join(args.save_to, "dev_env/trans_pert"), "w") as trans_pert:
         while True:
             padded_src = env.reset()
             #  sync with current attacker model
@@ -277,7 +274,7 @@ def valid(rank, device, args,
             for i, sent in enumerate(env.seqs_y):
                 # sentence is still surviving
                 perturbed_bleu.append(
-                    bleu.sentence_bleu(references=[sent], hypothesis=perturbed_result[i]))
+                    bleu.sentence_bleu(references=[sent], hypothesis=perturbed_result[i], emulate_multibleu=True))
             print("origin_bleu:", env.origin_bleu)
             print("perturbed_bleu: ", perturbed_bleu)
             bleu_degrade = (sum(env.origin_bleu)-sum(perturbed_bleu))/len(perturbed_bleu)
@@ -299,7 +296,7 @@ def valid(rank, device, args,
             for i in range(len(padded_src)):
                 src = [label for label in padded_src[i] if label != PAD]
                 perturbed_src = [label for label in perturbed_x_ids[i] if label != PAD]
-                edit_bleu += [bleu.sentence_bleu(references=[src], hypothesis=perturbed_src)]
+                edit_bleu += [bleu.sentence_bleu(references=[src], hypothesis=perturbed_src, emulate_multibleu=True)]
             print("edit_bleu: ", edit_bleu)
             summary_writer.add_scalar("edit_bleu",
                                       scalar_value=sum(edit_bleu)/len(edit_bleu),
@@ -348,6 +345,7 @@ def train(rank, device, args, counter, lock,
     :return:
     """
     trust_acc = acc_bound = discriminator_configs["acc_bound"]
+    converged_bound = discriminator_configs["converged_bound"]
     patience = discriminator_configs["patience"]
     attacker_model_configs = attacker_configs["attacker_model_configs"]
     attacker_optimizer_configs = attacker_configs["attacker_optimizer_configs"]
@@ -393,21 +391,22 @@ def train(rank, device, args, counter, lock,
                         src_vocab=src_vocab, trg_vocab=trg_vocab,
                         data_iterator=attacker_iterator,
                         save_to=args.save_to, device=device)
-
-    while True:
+    episode_count = 0
+    episode_length = 0
+    local_steps = 0  # optimization steps: for learning rate schedules
+    patience_t = patience
+    while True:  # infinite loop of data set
+        # we will continue with a new iterator with refreshed environments
+        # whenever the last iterator breaks with "StopIteration"
         attacker_iterator = attack_iterator.build_generator()
         env.reset_data_iter(attacker_iterator)
         padded_src = env.reset()
         padded_src = torch.from_numpy(padded_src)
         if device != "cpu":
             padded_src = padded_src.to(device)
-
         done = True
-        episode_count = 0
-        episode_length = 0
-        local_steps = 0  # optimization steps
         discriminator_base_steps = local_steps
-        patience_t = patience
+
         while True:
             # check for update of discriminator
             # if env.acc_validation(local_attacker, use_gpu=True if env.device != "cpu" else False) < 0.55:
@@ -419,7 +418,6 @@ def train(rank, device, args, counter, lock,
                 """
                 try:
                     discriminator_base_steps, trust_acc = env.update_discriminator(
-                        attack_iterator,
                         local_attacker,
                         discriminator_base_steps,
                         min_update_steps=discriminator_configs[
@@ -433,7 +431,7 @@ def train(rank, device, args, counter, lock,
                     break
 
                 discriminator_base_steps += 1  # a flag to label the discriminator updates
-                if trust_acc < 0.51:  # GAN target reached
+                if trust_acc < converged_bound:  # GAN target reached
                     patience_t -= 1
                     INFO("discriminator reached GAN convergence bound: %d times" % patience_t)
                 else:  # reset patience if discriminator is refreshed
@@ -444,6 +442,11 @@ def train(rank, device, args, counter, lock,
                            model=global_attacker,
                            optim=optimizer,
                            lr_scheduler=scheduler)
+
+                if trust_acc < converged_bound and patience_t == patience-1:
+                    # we only save the first params reaching acc_bound, because the latter one
+                    # tends to deteriorate in exploration.
+                    torch.save(global_attacker.state_dict(), os.path.join(args.save_to, "ACmodel.final"))
 
             if patience_t == 0:
                 WARN("maximum patience reached. Training Thread should stop")

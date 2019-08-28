@@ -1,8 +1,8 @@
 attack_configs:
   seed: 1234
-  victim_model: "/home/user_data/zouw/Models/save_dl4mt_zh2en_bpe/dl4mt.best.final"
-  victim_configs: "/home/user_data/zouw/Models/dl4mt_nist_zh2en_bpe.yaml"
-  pinyin_data: "/home/user_data/zouw/chnchar2pinyin.dat"
+  victim_model: "/home/user_data/zouw/Models/save_dl4mt_en2de/transformer.best.final"
+  victim_configs: "/home/user_data/zouw/Models/transformer_wmt14_en2de.yaml"
+  pinyin_data: ""
   init_perturb_rate: 0.4
   gamma: 0.99
   tau: 1.0
@@ -41,7 +41,7 @@ discriminator_configs:
   discriminator_model_configs:
     d_word_vec: 512
     d_model: 128
-    dropout: 0.
+    dropout: 0.0
     update_embedding: true
 
   discriminator_optimizer_configs:
@@ -63,10 +63,7 @@ training_configs:
   buffer_size: 1024
   batching_key: "samples"
   update_cycle: 4
-  valid_batch_size: 50
-  disp_freq: 100
   save_freq: 100
   num_kept_checkpoints: 1
   num_kept_best_model: 1
   loss_valid_freq: 10
-

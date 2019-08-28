@@ -18,6 +18,7 @@ import yaml
 BOS = Vocabulary.BOS
 EOS = Vocabulary.EOS
 PAD = Vocabulary.PAD
+UNK = Vocabulary.UNK
 
 
 def build_translate_model(victim_config,
@@ -168,7 +169,8 @@ class Translate_Env(object):
         self.origin_result = self.translate()
         # calculate BLEU scores for the top candidate
         for index, sent_t in enumerate(self.seqs_y):
-            bleu_t = bleu.sentence_bleu(references=[sent_t], hypothesis=self.origin_result[index])
+            bleu_t = bleu.sentence_bleu(references=[sent_t], hypothesis=self.origin_result[index], emulate_multibleu=True)
+
             self.origin_bleu.append(bleu_t)
         return self.padded_src.cpu().numpy()
 
@@ -317,7 +319,6 @@ class Translate_Env(object):
         return loss.item()
 
     def update_discriminator(self,
-                             data_iterator,
                              attacker_model,
                              base_steps=0,
                              min_update_steps=20,
@@ -326,7 +327,6 @@ class Translate_Env(object):
                              summary_writer=None):
         """
         update discriminator
-        :param data_iterator: (data_iterator type) provide batched labels for training
         :param attacker_model: attacker to generate training data for discriminator
         :param base_steps: used for saving
         :param min_update_steps: (integer) minimum update steps,
@@ -428,8 +428,6 @@ class Translate_Env(object):
             # modification on sequences (state)
             for batch_index in range(batch_size):
                 word_id = inputs[batch_index]
-                # print(word_id.item())
-                # print(word_id.item(),len(w2vocab[word_id.item()]))
                 target_word_id = self.w2vocab[word_id.item()][np.random.choice(len(self.w2vocab[word_id.item()]), 1)[0]]
                 target_of_step += [target_word_id]
             if self.device != "cpu" and not actions.is_cuda:
@@ -459,26 +457,57 @@ class Translate_Env(object):
             """ collect rewards on the current state
             """
             # calculate intermediate survival rewards
-            if not terminal:  # survival rewards for survived objects
+            if not terminal:
+                # survival rewards for survived objects
                 distribution, discriminate_index = discriminate_out.max(dim=-1)
                 distribution = distribution.detach().cpu().numpy()
                 discriminate_index = (1 - discriminate_index).cpu().numpy()
                 survival_value = distribution * discriminate_index * (1-np.array(self.terminal_signal))
                 reward += survival_value.sum()/2
-            else:  # penalty for intermediate termination
+            else:  # only penalty for overall intermediate termination
                 reward = -1 * batch_size
 
-            # only check for finished BLEU degradation when determined on the last label
+            # only check for finished relative BLEU degradation when survival on the last label
             if self.index == self.padded_src.shape[1]-1:
-                # translate calculate padded_src:
-                perturbed_result = self.translate()
+                # re-tokenize ignore the original UNK for victim model
+                inputs = self.padded_src.cpu().numpy().tolist()
+                new_inputs = []
+                for indices in inputs:
+                    # remove EOS, BOS, PAD
+                    new_line = [word_id for word_id in indices if word_id not in [EOS, BOS, PAD]]
+                    new_line = self.src_vocab.ids2sent(new_line)
+                    if not hasattr(self.src_vocab.tokenizer, "bpe"):
+                        new_line = new_line.strip().split()
+                    else:
+                        new_token = []
+                        for w in new_line.strip().split():
+                            if w != self.src_vocab.id2token(UNK):
+                                new_token.append(self.src_vocab.tokenizer.bpe.segment_word(w))
+                            else:
+                                new_token.append([w])
+                        new_line = sum(new_token, [])
+                    new_line = [self.src_vocab.token2id(t) for t in new_line]
+                    new_inputs.append(new_line)
+                # translate calculate padded_src
+                perturbed_result = self.translate(self.prepare_data(seqs_x=new_inputs,
+                                                  cuda=True if self.device != "cpu" else False))
                 # calculate final BLEU degredation:
                 bleu_degrade = []
                 for i, sent in enumerate(self.seqs_y):
                     # sentence is still surviving
                     if self.index >= self.sent_len[i]-1 and self.terminal_signal[i] == 0:
-                        degraded_value = self.origin_bleu[i]-bleu.sentence_bleu(references=[sent],hypothesis=perturbed_result[i])
-                        bleu_degrade.append(degraded_value)
+                        if self.origin_bleu[i] == 0:
+                            # here we want to minimize noise from original bad cases
+                            relative_degraded_value = 0
+                        else:
+                            relative_degraded_value = (self.origin_bleu[i] - bleu.sentence_bleu(references=[sent],
+                                                                                            hypothesis=perturbed_result[i],
+                                                                                            emulate_multibleu=True
+                                                                                            ))
+
+                            # print(relative_degraded_value, self.origin_bleu[i])
+                            relative_degraded_value/=self.origin_bleu[i]
+                        bleu_degrade.append(relative_degraded_value)
                     else:
                         bleu_degrade.append(0.0)
                 reward += sum(bleu_degrade) * 10

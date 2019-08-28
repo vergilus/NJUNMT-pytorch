@@ -14,8 +14,8 @@ data_configs:
       max_n_words: -1
     - type: "bpe"
       dict_path: "/home/public_data/nmtdata/nist_zh-en_1.34m/vocab.en.bpe.json"
-      max_n_words: -1
       codes: "/home/public_data/nmtdata/nist_zh-en_1.34m/codes.30k.en"
+      max_n_words: -1
   max_len:
     - 128
     - 128
@@ -27,7 +27,7 @@ model_configs:
   d_word_vec: 512
   d_model: 1024
   dropout: 0.5
-  proj_share_weight: true
+  proj_share_weight: True
   bridge_type: "mlp"
 
 optimizer_configs:
@@ -37,19 +37,18 @@ optimizer_configs:
   optimizer_params: ~
   schedule_method: loss
   scheduler_configs:
-    patience: 2
-    min_lr: 0.00005
     scale: 0.5
+    min_lr: 0.00005
+    patience: 2
 
 training_configs:
   seed: 1234
   max_epochs: 50
   shuffle: true
   use_bucket: true
-  buffer_size: 1000
-  batch_size: 50
-  batching_key: "samples"
-  update_cycle: 1
+  batch_size: 2000
+  batching_key: "tokens"
+  update_cycle: 4
   valid_batch_size: 20
   disp_freq: 1000
   save_freq: 1000
@@ -57,7 +56,7 @@ training_configs:
   loss_valid_freq: 1000
   bleu_valid_freq: 1000
   bleu_valid_batch_size: 5
-  bleu_valid_warmup: 1
+  bleu_valid_warmup: 0
   bleu_valid_configs:
     max_steps: 150
     beam_size: 5

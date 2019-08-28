@@ -1,24 +1,25 @@
 data_configs:
   lang_pair: "en-de"
   train_data:
-    - "/home/user_data/weihr/NMT_DATA_PY3/WMT14-DE-EN/train.tok.clean.bpe.32000.en"
-    - "/home/user_data/weihr/NMT_DATA_PY3/WMT14-DE-EN/train.tok.clean.bpe.32000.de"
+    - "/home/public_data/nmtdata/wmt14_en-de_data_selection/train.tok.clean.en"
+    - "/home/public_data/nmtdata/wmt14_en-de_data_selection/train.tok.clean.de"
   valid_data:
-    - "/home/user_data/weihr/NMT_DATA_PY3/WMT14-DE-EN/newstest2013.tok.bpe.32000.en"
-    - "/home/user_data/weihr/NMT_DATA_PY3/WMT14-DE-EN/newstest2013.tok.bpe.32000.de"
-  bleu_valid_reference: "/home/user_data/weihr/NMT_DATA_PY3/WMT14-DE-EN/newstest2013.de"
+    - "/home/public_data/nmtdata/wmt14_en-de_data_selection/newstest2013.tok.en"
+    - "/home/public_data/nmtdata/wmt14_en-de_data_selection/newstest2013.tok.de"
+  bleu_valid_reference: "/home/public_data/nmtdata/wmt14_en-de_data_selection/newstest2013.de"
   vocabularies:
     - type: "bpe"
-      dict_path: "/home/user_data/weihr/NMT_DATA_PY3/WMT14-DE-EN/en.json"
+      dict_path: "/home/public_data/nmtdata/wmt14_en-de_data_selection/vocab.json"
       max_n_words: -1
+      codes: "/home/public_data/nmtdata/wmt14_en-de_data_selection/bpe.32000"
     - type: "bpe"
-      dict_path: "/home/user_data/weihr/NMT_DATA_PY3/WMT14-DE-EN/de.json"
+      dict_path: "/home/public_data/nmtdata/wmt14_en-de_data_selection/vocab.json"
       max_n_words: -1
+      codes: "/home/public_data/nmtdata/wmt14_en-de_data_selection/bpe.32000"
   max_len:
-    - -1
-    - -1
+    - 100
+    - 100
   num_refs: 1
-  eval_at_char_level: false
 
 model_configs:
   model: Transformer
@@ -49,17 +50,18 @@ training_configs:
   batch_size: 2500
   batching_key: "tokens"
   update_cycle: 10
-  valid_batch_size: 20
-  disp_freq: 500
-  save_freq: 500
+  valid_batch_size: 30
+  disp_freq: 100 # Frequency to print information
+  save_freq: 500 # Frequency to save the model
   num_kept_checkpoints: 1
   loss_valid_freq: 500
   bleu_valid_freq: 500
-  bleu_valid_batch_size: 20
-  bleu_valid_warmup: 1
+  bleu_valid_batch_size: 5
+  bleu_valid_warmup: 0 # Start to do BLEU validation after those epochs
   bleu_valid_configs:
     max_steps: 150
     beam_size: 4
     alpha: 0.6
-    postprocess: True
+    postprocess: true
+    sacrebleu_args: "--tokenize intl -lc"
   early_stop_patience: 50

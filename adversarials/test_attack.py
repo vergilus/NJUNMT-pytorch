@@ -7,22 +7,24 @@ from src.data.data_iterator import DataIterator
 from src.models import build_model
 from src.decoding import beam_search
 
-import nltk.translate.bleu_score as bleu
 import argparse
 import torch
 
 parser = argparse.ArgumentParser()
-parser.add_argument("--source_path", type=str, default="/home/public_data/nmtdata/nist_zh-en_1.34m/test/mt04.src",
+#
+parser.add_argument("--source_path", type=str, default="/home/public_data/nmtdata/nist_zh-en_1.34m/test/mt02.src",
                     help="the path for input files")
 parser.add_argument("--model_path", type=str,
-                    default="/home/zouw/pycharm_project_NMT_torch/adversarials/attack_log/A3Cmodel.ckpt.23750")
+                    default="/home/zouw/pycharm_project_NMT_torch/adversarials/attack_zh2en_word_tf_log/ACmodel.final")
 parser.add_argument("--config_path", type=str,
-                    default="/home/zouw/pycharm_project_NMT_torch/configs/nist_zh2en_attack.yaml",
+                    default="/home/zouw/pycharm_project_NMT_torch/configs/nist_zh2en_attack_word.yaml",
                     help="the path to attack config file.")
+parser.add_argument("--save_to", type=str, default="./attack_zh2en_word_tf_log",
+                    help="the path for result saving.")
 parser.add_argument("--batch_size", type=int, default=30,
                     help="test batch_size")
-parser.add_argument("--save_to", type=str, default="./attack_log",
-                    help="the path for result saving.")
+parser.add_argument("--unk_ignore", action="store_true", default=False,
+                    help="Don't replace target words using UNK (default as false)")
 parser.add_argument("--use_gpu", action="store_true", default=False,
                     help="Whether to use GPU.(default as false)")
 
@@ -65,6 +67,22 @@ def prepare_data(seqs_x, seqs_y=None, cuda=False, batch_first=True):
                          cuda=cuda, batch_first=batch_first)
     return x, y
 
+def calculate_cummulate_survive(max_len, gamma, surrogate_step_survival):
+    """
+    estimate a overall surrogate survival values
+    :param input: the src tensor to be attacked. shape: [batch, timestep]
+    :param gamma: used in reinforced rewards
+    :param surrogate_survival: surrogate single step survival rewards
+    :return: a list of cummulated survival for every step,
+    with estimate_accumulate_survive[timestep]=accumualted survive of sen_len "timestep"
+    """
+    estimate_accumulate_survive = [surrogate_step_survival]
+    for i in range(1,max_len):
+        estimate_accumulate_survive.append(
+            estimate_accumulate_survive[i-1]*gamma+surrogate_step_survival
+        )
+    return torch.tensor(estimate_accumulate_survive)
+
 def test_attack():
     """
     during test phrase, the attacker modifies inputs without constrains
@@ -105,6 +123,14 @@ def test_attack():
                                             save_to_full=os.path.join(args.save_to, "full_near_vocab"),
                                             top_reserve=12,
                                             emit_as_id=True)
+    if attack_configs["pinyin_data"] != "":
+        # for Chinese we adopt
+        INFO("collect pinyin data for gen_UNK, this would take a while")
+        char2pyDict, py2charDict = collect_pinyin(pinyin_path=attack_configs["pinyin_data"],
+                                              src_path=data_configs["train_data"][0])
+    else:
+        INFO("test without pinyin")
+        char2pyDict, py2charDict = None, None
 
     INFO("build and reload attacker model parameters")
     global_attacker = attacker.Attacker(src_vocab.max_n_words,
@@ -129,22 +155,30 @@ def test_attack():
     origin_results = []  # original translation
     perturbed_seqs = []  # adversarial src
     perturbed_results = []  # adversarial translation
+    overall_values = []  # attacker value estimation on first step: indicates overall degradation
+
     # translate all sentences and collect all adversarial src
     with open(os.path.join(args.save_to, "perturbed_src"), "w") as perturbed_src, \
          open(os.path.join(args.save_to, "perturbed_trans"), "w") as perturbed_trans, \
          open(os.path.join(args.save_to, "origin_trans"), "w") as origin_trans:
         for batch in test_iterator:
             numbers, seqs_x = batch
-            batch_size_t = len(seqs_x)
+            # print(seqs_x)
+            batch_size = len(seqs_x)
             x = prepare_data(seqs_x=seqs_x, cuda=args.use_gpu)
             x_mask = x.detach().eq(PAD).long()
+            cummulate_survive = calculate_cummulate_survive(max_len=x.shape[1],
+                                                            gamma=attack_configs["gamma"],
+                                                            surrogate_step_survival=0.3)
+            # x_len = (1 - x_mask).sum(dim=-1).float()
 
             with torch.no_grad():
                 word_ids = beam_search(nmt_model=nmt_model, beam_size=5, max_steps=150,
                                        src_seqs=x, alpha=-1.0)
             word_ids = word_ids.cpu().numpy().tolist()  # in shape [batch_size, beam_size, max_len]
             # remove PAD and append result with its indices
-            for sent_t in word_ids:  # we only take top-one final results from beam
+            # we only take top-one final results from beam
+            for sent_t in word_ids:
                 top_result = [trg_vocab.id2token(wid) for wid in sent_t[0] if wid not in [PAD, EOS]]
                 origin_results.append(trg_vocab.tokenizer.detokenize(top_result))
             result_indices += numbers
@@ -156,7 +190,8 @@ def test_attack():
                 for t in range(1, x.shape[1]-1):
                     attack_out, critic_out = global_attacker(x, label=x[:, t-1:t+1])
                     attack_results.append(attack_out.argmax(dim=1).unsqueeze(dim=1))
-                    critic_results.append(critic_out-0.5*t)
+                    # print(mask_len.shape, critic_out.shape)
+                    critic_results.append(critic_out)
 
             attack_results = torch.cat(attack_results, dim=1)
             temp_mask = (1-x_mask)[:, 1:x.shape[1]-1]
@@ -164,8 +199,8 @@ def test_attack():
             critic_results = torch.cat(critic_results, dim=1)*(1-x_mask)[:, 1:x.shape[1]-1].float()
             critic_results *= temp_mask.float()
             critic_results = critic_results.cpu().numpy().tolist()
-            print(attack_results)
-            print(critic_results)
+            # print(attack_results)
+            # print(critic_results)
 
             # get adversarial samples for the src
             with torch.no_grad():
@@ -173,12 +208,29 @@ def test_attack():
                 batch_size, max_steps = x.shape
                 for t in range(1, max_steps - 1):  # ignore BOS and EOS
                     inputs = x[:, t - 1:t + 1]
-                    attack_out = global_attacker.get_attack(x=perturbed_x_ids, label=inputs)
+                    attack_out, critic_out = global_attacker(x=perturbed_x_ids, label=inputs)
                     actions = attack_out.argmax(dim=-1)
+                    if t == 1:
+                        overall_values += (critic_out - cummulate_survive[-t-2]).cpu().numpy().tolist()
+                    # action is masked if the corresponding value estimation is negative
+                    attack_out *= (critic_out-cummulate_survive[-t-2]).gt(0).float()  #  - cummulate_survive[-t-2]
                     target_of_step = []
                     for batch_index in range(batch_size):
                         word_id = inputs[batch_index][1]
-                        target_word_id = w2vocab[word_id.item()][np.random.choice(len(w2vocab[word_id.item()]), 1)[0]]
+                        # select nearest candidate based on victim embedding
+                        target_word_id = w2vocab[word_id.item()][0]  #[np.random.choice(len(w2vocab[word_id.item()]), 1)[0]]
+
+                        # select nearest candidate based on attacker embedding
+                        # origin_emb = global_attacker.src_embedding(word_id)
+                        # candidates_emb = global_attacker.src_embedding(torch.tensor(w2vocab[word_id.item()]).cuda())
+                        # nearest = candidates_emb.matmul(origin_emb)\
+                        #     .div((candidates_emb*candidates_emb).sum(dim=-1))\
+                        #     .argmax(dim=-1).item()
+                        # target_word_id = w2vocab[word_id.item()][nearest]
+
+                        if args.unk_ignore and target_word_id == UNK:
+                            # undo this attack if UNK is set to be ignored
+                            target_word_id = word_id.item()
                         target_of_step += [target_word_id]
                     # override the perturbed results with random choice from candidates
                     perturbed_x_ids[:, t] *= (1 - actions)
@@ -186,14 +238,42 @@ def test_attack():
                     if GlobalNames.USE_GPU:
                         adjustification_ = adjustification_.cuda()
                     perturbed_x_ids[:, t] += adjustification_ * actions
-                # apply mask on the results
-                perturbed_x_ids *= (1 - x_mask)
-                # translate sequences and calculate degredated bleu scores on batches
+                # re-tokenization and validate UNK
+                inputs = perturbed_x_ids.cpu().numpy().tolist()
+                new_inputs = []
+                for origin_indices, indices in zip(x.cpu().numpy().tolist(), inputs):
+                    new_line_token = []  # for output files
+                    # remove BOS, EOS, PAD, and detokenize to sentence
+                    for origin_word_id, word_id in zip(origin_indices, indices):
+                        if word_id not in [BOS, EOS, PAD]:
+                            if word_id == UNK and origin_word_id != UNK:
+                                # validate UNK induced by attack and append
+                                new_line_token.append(gen_UNK(src_token=src_vocab.id2token(origin_word_id),
+                                                              vocab=src_vocab,
+                                                              char2pyDict=char2pyDict, py2charDict=py2charDict))
+                            else:
+                                new_line_token.append(src_vocab.id2token(word_id))
+                    new_line_token = src_vocab.tokenizer.detokenize(new_line_token)
+                    perturbed_seqs.append(new_line_token)
+                    # tokenization must ignore original <UNK>
+                    if not hasattr(src_vocab.tokenizer, "bpe"):
+                        new_line = new_line_token.strip().split()
+                    else:
+                        new_token = []
+                        for w in new_line_token.strip().split():
+                            if w != src_vocab.id2token(UNK):
+                                new_token.append(src_vocab.tokenizer.bpe.segment_word(w))
+                            else:
+                                new_token.append([w])
+                        new_line = sum(new_token, [])
+                    new_line = [src_vocab.token2id(t) for t in new_line]
+                    new_inputs.append(new_line)
+                # override perturbed_x_ids
+                perturbed_x_ids = prepare_data(seqs_x=new_inputs,
+                                               cuda=args.use_gpu)
+                # batch translate perturbed_src and calculate relative degraded BLEU scores on batches
                 word_ids = beam_search(nmt_model=nmt_model, beam_size=5, max_steps=150,
                                        src_seqs=perturbed_x_ids, alpha=-1.0)
-                for sent_t in perturbed_x_ids.cpu().numpy().tolist():
-                    seq = [src_vocab.id2token(wid) for wid in sent_t if wid not in [EOS, PAD, BOS]]
-                    perturbed_seqs.append(src_vocab.tokenizer.detokenize(seq))
 
             word_ids = word_ids.cpu().numpy().tolist()  # in shape [batch_size, beam_size, max_len]
             # translate adversarial inputs
@@ -205,11 +285,11 @@ def test_attack():
         origin_order = np.argsort(result_indices).tolist()
         for line in [origin_results[ii] for ii in origin_order]:
             origin_trans.write(line+"\n")
-        for line in [perturbed_seqs[ii] for ii in origin_order]:
-            perturbed_src.write(line+"\n")
+        for line, value in [(perturbed_seqs[ii], overall_values[ii]) for ii in origin_order]:
+            perturbed_src.write(line+"\n")  # +" "+str(value)
         for line in [perturbed_results[ii] for ii in origin_order]:
             perturbed_trans.write(line+"\n")
-        # for line in [perturbed_src]
+
 
 if __name__ == "__main__":
     test_attack()

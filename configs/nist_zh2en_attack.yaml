@@ -1,7 +1,8 @@
 attack_configs:
   seed: 1234
-  victim_model: "/home/user_data/zouw/Models/save_zhen_bpe/transformer.best.final"
+  victim_model: "/home/user_data/zouw/Models/save_tf_zh2en_bpe/transformer.best.final"
   victim_configs: "/home/user_data/zouw/Models/transformer_nist_zh2en_bpe.yaml"
+  pinyin_data: "/home/user_data/zouw/chnchar2pinyin.dat"
   init_perturb_rate: 0.4
   gamma: 0.99
   tau: 1.0
@@ -28,23 +29,19 @@ attacker_configs:
       d_model: 128
       warmup_steps: 100
 
-discriminator_data_configs:
-  valid_data:
-  - "/home/user_data/weihr/NMT_DATA_PY3/NIST-ZH-EN/test/mt03.src"
-  - "/home/user_data/weihr/NMT_DATA_PY3/NIST-ZH-EN/test/mt03.ref0"
-
 discriminator_configs:
   discriminator_update_steps: 80
   discriminator_batch: 50
   acc_bound: 0.85
+  converged_bound: 0.52
   acc_valid_freq: 10
   acc_valid_batch_size: 50
-  patience: 5
+  patience: 15
 
   discriminator_model_configs:
     d_word_vec: 512
     d_model: 128
-    dropout: 0.
+    dropout: 0.0
     update_embedding: true
 
   discriminator_optimizer_configs:
@@ -66,10 +63,7 @@ training_configs:
   buffer_size: 1024
   batching_key: "samples"
   update_cycle: 4
-  valid_batch_size: 50
-  disp_freq: 100
   save_freq: 100
   num_kept_checkpoints: 1
   num_kept_best_model: 1
   loss_valid_freq: 10
-
