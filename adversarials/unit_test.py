@@ -9,6 +9,7 @@ from src.optim import *
 from src.optim.lr_scheduler import *
 from tensorboardX import SummaryWriter
 import numpy as np
+from nltk.translate.bleu_score import corpus_bleu
 
 BOS = Vocabulary.BOS
 EOS = Vocabulary.EOS
@@ -431,10 +432,6 @@ def test_attack(config_path,
 # test_discriminator(config_path=configs_path[2],
 #                    save_to="./Discriminator_enfr",
 #                    model_name="Discriminator")
-ref_path = "/home/public_data/nmtdata/nist_zh-en_1.34m/test/mt03.src"
-answ_path = "attack_zh2en_tf_log/no_UNK_attack/mt02/perturbed_src"
-answ_path = "/home/zouw/pycharm_project_NMT_torch/adversarials/search35_attack_mt03"
-
 def charF(ref_path, answ_path, beta=1):
     with open(ref_path, "r") as refs, open(answ_path, "r") as answ:
         # break down everything to char and calculate F_score
@@ -448,8 +445,8 @@ def charF(ref_path, answ_path, beta=1):
             answ_line =[ word for word in answ_line.strip().split()]  #  if word not in ["<UNK>", "<PAD>"]
             ref_line = "".join(ref_line)
             answ_line = "".join(answ_line)
-            ref_set = set(list(ref_line))
-            answ_set = set(list(answ_line))
+            ref_set = set(list(ref_line.strip()))
+            answ_set = set(list(answ_line.strip()))
             print(ref_line, answ_line)
             intersect_count += len(ref_set.intersection(answ_set))
             ref_count+=len(ref_set)
@@ -461,4 +458,112 @@ def charF(ref_path, answ_path, beta=1):
         charF_score = (1+beta**2)*total_p*total_r/(beta**2*total_p+total_r)
         return charF_score
 
-print(charF(ref_path, answ_path, 1))
+def charBLEU(ref_path, answ_path):
+    """
+    corpus char level BLEU.
+    :param ref_path: reference sequences file
+    :param answ_path: answer sequence file
+    :return:
+    """
+    hypothses = []
+    referenfces = []
+    with open(ref_path, "r") as refs, open(answ_path, "r") as answ:
+        # print(len(refs), len(answ))
+        # assert len(refs) == len(answ), "file mismatch!"
+        for line1, line2 in zip(refs, answ):
+            hypothses.append(list(line1.strip()))
+            referenfces.append([list(line2.strip())])
+    return corpus_bleu(referenfces, hypothses)
+
+def mutualchrBLEU(ref_path, answ_path):
+    hyp1 = []
+    ref1 = []
+    hyp0 = []
+    ref0 = []
+    with open(ref_path, "r") as refs, open(answ_path, "r") as answ:
+        for line0, line1 in zip(refs, answ):
+            line0 = list(line0.strip())
+            line1 = list(line1.strip())
+            hyp0.append(line0)
+            ref0.append([line1])
+            hyp1.append(line1)
+            ref1.append([line0])
+    mBLEU=(corpus_bleu(ref0, hyp0)+corpus_bleu(ref1, hyp1))/2
+    return mBLEU
+
+def WER(ref_path, answ_path, char_level=False):
+    """
+    calculate word error rates with levinshtein distance,
+    get substitution / deletion / insertion w.r.t. total tokens in the reference
+    :param ref_path: reference path
+    :param answ_path: hypothesis path
+    :param char_level: if test on char level (default False)
+    :return:
+    """
+
+    edit_counter = 0
+    ref_counter = 0
+    with open(ref_path, "r") as refs, open(answ_path, "r") as answ:
+        for ref_line, hyp_line in zip(refs, answ):
+            # simple cleaning and tokenize by space
+            ref_line = ref_line.strip().replace("\r", "").replace("\n", "")
+            hyp_line = hyp_line.strip().replace("\r", "").replace("\n", "")
+            if char_level:
+                ref_line = list(ref_line)
+                hyp_line = list(hyp_line)
+            else:
+                ref_line = ref_line.split()
+                hyp_line = hyp_line.split()
+            m = np.zeros((len(ref_line) + 1, len(hyp_line) + 1)).astype(dtype=np.int32)
+            m[0, 1:] = np.arange(1, len(hyp_line) + 1)
+            m[1:, 0] = np.arange(1, len(ref_line) + 1)
+            # Now loop over remaining cell (from the second row and column onwards)
+            # The value of each selected cell is:
+            #
+            #   if token represented by row == token represented by column:
+            #       value of the top-left diagonal cell
+            #   else:
+            #       calculate 3 values:
+            #            * top-left diagonal cell + 1 (which represents substitution)
+            #            * left cell + 1 (representing deleting)
+            #            * top cell + 1 (representing insertion)
+            #       value of the smallest of the three
+            #
+            for i in range(1, m.shape[0]):
+                for j in range(1, m.shape[1]):
+                    if hyp_line[j - 1] == ref_line[i - 1]:
+                        m[i, j] = m[i - 1, j - 1]
+                    else:
+                        m[i, j] = min(
+                            m[i - 1, j - 1],
+                            m[i, j - 1],
+                            m[i - 1, j]
+                        ) + 1
+            edit_counter += m[len(ref_line), len(hyp_line)]
+            ref_counter += len(ref_line)
+    # print(edit_counter, ref_counter)
+    wer = edit_counter/float(ref_counter)
+    # and the minimum-edit distance is simply the value of the down-right most cell
+    return wer
+
+# zh2en
+ref_path = "/home/public_data/nmtdata/nist_zh-en_1.34m/test/mt02.src"
+# answ_path = "/home/zouw/pycharm_project_NMT_torch/adversarials/random4_attack_zh2en_results/rand_mt05"
+# answ_path = "/home/zouw/pycharm_project_NMT_torch/adversarials/search_attack_tf_zh2en_word_results/search3_attack_mt06"
+# answ_path = "/home/zouw/pycharm_project_NMT_torch/adversarials/attack_en2fr_dl4mt_log/newstest2014/perturbed_src"
+answ_path = "/home/zouw/pycharm_project_NMT_torch/adversarials/attack_zh2en_dl4mt_log/perturbed_src"
+
+# en2de
+# ref_path = "/home/public_data/nmtdata/wmt14_en-de_data_selection/newstest2016.tok.en"
+# # answ_path = "/home/zouw/pycharm_project_NMT_torch/adversarials/search4_attack_tf_en2de_results/search4attack_newstest2016"
+# answ_path = "/home/zouw/pycharm_project_NMT_torch/adversarials/attack_en2de_dl4mt_log/newstest2016/perturbed_src"
+
+# en2fr
+# ref_path = "/home/public_data/nmtdata/wmt15_en-fr/test/newstest2014.en.tok"
+# # answ_path = "/home/zouw/pycharm_project_NMT_torch/adversarials/search4_attack_dl4mt_en2fr_results/search4attack_newstest2013"
+# answ_path = "/home/zouw/pycharm_project_NMT_torch/adversarials/attack_en2fr_tf_log/perturbed_src"
+
+print("chrF1=", charF(ref_path, answ_path, 1))
+print("chrBLEU=", charBLEU(ref_path, answ_path))
+print("WER=", WER(ref_path, answ_path))
+print("chrWER=", WER(ref_path, answ_path, True))

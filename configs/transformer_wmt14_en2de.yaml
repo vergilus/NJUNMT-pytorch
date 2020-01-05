@@ -17,8 +17,8 @@ data_configs:
       max_n_words: -1
       codes: "/home/public_data/nmtdata/wmt14_en-de_data_selection/bpe.32000"
   max_len:
-    - 100
-    - 100
+    - -1
+    - -1
   num_refs: 1
 
 model_configs:

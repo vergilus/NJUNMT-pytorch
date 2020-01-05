@@ -15,6 +15,7 @@ __all__ = [
     'build_vocab_shortlist',
     'to_gpu',
     'should_trigger_by_steps',
+    'load_model_parameters',
     'Saver'
 ]
 
@@ -189,6 +190,12 @@ def should_trigger_by_steps(global_step,
         else:
             return False
 
+
+def load_model_parameters(path, map_location="cpu"):
+    state_dict = torch.load(path, map_location=map_location)
+    if "model" in state_dict:
+        return state_dict["model"]
+    return state_dict
 
 class Saver(object):
     """ Saver to save and restore objects.

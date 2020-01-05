@@ -74,6 +74,7 @@ def load_or_extract_near_vocab(config_path,
                                init_perturb_rate=0,
                                batch_size=50,
                                top_reserve=12,
+                               all_with_UNK=False,
                                reload=True,
                                emit_as_id=False):
     """based on the embedding parameter from Encoder, extract near vocabulary for all words
@@ -85,6 +86,7 @@ def load_or_extract_near_vocab(config_path,
     :param init_perturb_rate: (float) the weight-adjustment for perturb
     :param batch_size: (integer) extract near vocab by batched cosine/Euclidean-similarity
     :param top_reserve: (integer) at most reserve top-k near candidates
+    :param all_with_UNK: during generation, add UNK to all tokens as a candidate
     :param reload: reload from the save_to_path if previous record exists
     :param emit_as_id: (boolean) the key in return will be token ids instead of token
     """
@@ -190,7 +192,7 @@ def load_or_extract_near_vocab(config_path,
                         else:
                             near_vocab += [near_cand]
                     else:
-                        # extract near candidates according to cos-dist and E-dist
+                        # extract near candidates according to cos-dist within averaged E-dist
                         for k in range(1, topk_val.shape[1]):
                             near_cand_id = topk_indices[j][k]
                             near_cand = src_vocab.id2token(near_cand_id)
@@ -202,16 +204,16 @@ def load_or_extract_near_vocab(config_path,
                                     near_vocab += [near_cand_id]
                                 else:
                                     near_vocab += [near_cand]
-                            if k == topk_val.shape[1]-1 and bingo == 0:
-                                # to make life easier, we keep at least one candidate: UNK
-                                last_cand_ids = [UNK]
-                                for final_reserve_id in last_cand_ids:
-                                    last_cand = src_vocab.id2token(final_reserve_id)
-                                    similar_vocab.write(last_cand + "\t")
-                                    if emit_as_id:
-                                        near_vocab += [final_reserve_id]
-                                    else:
-                                        near_vocab += [last_cand]
+                        # additionally add UNK as candidates
+                        if bingo == 0 or all_with_UNK:
+                            last_cand_ids = [UNK]
+                            for final_reserve_id in last_cand_ids:
+                                last_cand = src_vocab.id2token(final_reserve_id)
+                                similar_vocab.write(last_cand + "\t")
+                                if emit_as_id:
+                                    near_vocab += [final_reserve_id]
+                                else:
+                                    near_vocab += [last_cand]
 
                     probability = bingo/(len(src_word)*top_reserve)
                     if init_perturb_rate != 0:
@@ -406,7 +408,7 @@ def gen_UNK(src_token, vocab, char2pyDict, py2charDict):
         for i in range(edit_range):
             ori_char = src_token[index]
             new_token = src_token
-            py_key="%X"%ord(ori_char)
+            py_key = "%X" % ord(ori_char)
             if py_key in char2pyDict:
                 # this character is available in gen_UNK
                 for pinyin in char2pyDict[py_key]:
@@ -423,20 +425,32 @@ def gen_UNK(src_token, vocab, char2pyDict, py2charDict):
             index = (index+1) % edit_range
     else:  # roman character replacement to generate unk
         # scramble the symble in between
-        if edit_range>3:
-            index = np.random.randint(1, edit_range)
-            new_token = src_token[:index]+\
+        if edit_range > 3:
+            index = np.random.randint(0, edit_range-2)
+            new_token = src_token[:index] + \
                         src_token[index+1]+src_token[index]+\
                         src_token[index+2:]
             if vocab.token2id(new_token) == UNK:
                 return new_token
-        # nothing returned or token is too short, repeat last char
-        char = src_token[edit_range - 1]
-        token_stem = src_token[:edit_range]
-        while vocab.token2id() != UNK:
-            new_token = token_stem + char
 
-    return src_token
+    # nothing returned or token is too short, repeat last char
+    char = src_token[edit_range - 1]
+    token_stem = src_token[:edit_range]
+    new_token = token_stem + char
+    if src_token.endswith("@@"):
+        temp_token = new_token+"@@"
+    else:
+        temp_token = new_token
+    while vocab.token2id(temp_token) != UNK:
+        new_token = new_token + char
+        # print(src_token, "#>$#", new_token)
+        if src_token.endswith("@@"):
+            temp_token = new_token + "@@"
+        else:
+            temp_token = new_token
+    new_token = temp_token
+    # print(src_token, "-->", new_token)
+    return new_token
 
 def corpus_bleu_char(hyp_in, ref_in, need_tokenized=True):
     """

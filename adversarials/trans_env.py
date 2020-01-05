@@ -33,7 +33,7 @@ def build_translate_model(victim_config,
     :param victim_model_path: victim_models
     :param vocab_src: source vocabulary
     :param vocab_trg: target vocabulary
-    :param device: gpu version of model
+    :param device: map location (cpu or cuda:*)
     :return: nmt_models used in the beam-search
     """
     translate_model_configs = victim_config["model_configs"]
@@ -42,11 +42,10 @@ def build_translate_model(victim_config,
     nmt_model = build_model(n_src_vocab=vocab_src.max_n_words,
                             n_tgt_vocab=vocab_trg.max_n_words,
                             **translate_model_configs)
-    nmt_model.eval()
+    nmt_model.to(device)
     INFO("load embedding params to device %s" % device)
     params = load_translate_model(victim_model_path, map_location=device)
     nmt_model.load_state_dict(params)
-    nmt_model.to(device)
     INFO("finished building translation model for environment on %s" % device)
     return nmt_model
 
@@ -104,7 +103,8 @@ class Translate_Env(object):
                                                      self.victim_model_path,
                                                      vocab_src=self.src_vocab,
                                                      vocab_trg=self.trg_vocab,
-                                                     device=self.device)
+                                                     device=self.device
+                                                     )
         self.translate_model.eval()
         self.w2p, self.w2vocab = load_or_extract_near_vocab(config_path=self.victim_config_path,
                                                             model_path=self.victim_model_path,
@@ -147,6 +147,9 @@ class Translate_Env(object):
                     discriminator_optim_configs['schedule_method']))
         ############################################################
         self._init_state()
+        self.adversarial = attack_configs["adversarial"]  # adversarial sample or reinforced samples
+        self.r_s_weight = attack_configs["r_s_weight"]
+        self.r_d_weight = attack_configs["r_d_weight"]
 
     def _init_state(self):
         """
@@ -164,13 +167,13 @@ class Translate_Env(object):
         self.terminal_signal = [0] * len(seqs_x)  # for terminal signals
 
         self.padded_src, self.padded_trg = self.prepare_data(seqs_x=seqs_x,
-                                                             seqs_y=self.seqs_y,
-                                                             cuda=True if self.device!="cpu" else False)
+                                                             seqs_y=self.seqs_y)
         self.origin_result = self.translate()
         # calculate BLEU scores for the top candidate
         for index, sent_t in enumerate(self.seqs_y):
-            bleu_t = bleu.sentence_bleu(references=[sent_t], hypothesis=self.origin_result[index], emulate_multibleu=True)
-
+            bleu_t = bleu.sentence_bleu(references=[sent_t],
+                                        hypothesis=self.origin_result[index],
+                                        emulate_multibleu=True)
             self.origin_bleu.append(bleu_t)
         return self.padded_src.cpu().numpy()
 
@@ -190,17 +193,17 @@ class Translate_Env(object):
                        model_path=self.victim_model_path,
                        device=self.device)
 
-    def prepare_D_data(self, attacker, seqs_x, seqs_y, use_gpu, batch_first=True):
+    def prepare_D_data(self, attacker, seqs_x, seqs_y, batch_first=True):
         """
         using global_attacker to generate training data for discriminator
         :param attacker: prepare the data
         :param seqs_x: list of sources
         :param seqs_y: corresponding targets
-        :param use_gpu: use_gpu
         :param batch_first: first dimension of seqs be batch
+        :param device: cpu or cuda*
         :return: perturbed seqsx, seqsy, flags
         """
-        def _np_pad_batch_2D(samples, pad, batch_first=True, cuda=True):
+        def _np_pad_batch_2D(samples, pad, batch_first=True):
             # pack seqs into tensor with pads
             batch_size = len(samples)
             sizes = [len(s) for s in samples]
@@ -210,15 +213,13 @@ class Translate_Env(object):
                 x_np[ii, :sizes[ii]] = samples[ii]
             if batch_first is False:
                 x_np = np.transpose(x_np, [1, 0])
-            x = torch.tensor(x_np)
-            if cuda is True:
-                x = x.cuda()
+            x = torch.tensor(x_np).to(self.device)
             return x
 
         seqs_x = list(map(lambda s: [BOS] + s + [EOS], seqs_x))
 
         x = _np_pad_batch_2D(samples=seqs_x, pad=PAD,
-                             cuda=use_gpu, batch_first=batch_first)
+                             batch_first=batch_first)
         # training mode attack: randomly choose half of the seqs to attack
         attacker.eval()
         x, flags = attacker.seq_attack(x, self.w2vocab,
@@ -227,9 +228,8 @@ class Translate_Env(object):
         seqs_y = list(map(lambda s: [BOS] + s + [EOS], seqs_y))
 
         y = _np_pad_batch_2D(seqs_y, pad=PAD,
-                             cuda=use_gpu, batch_first=batch_first)
-        if use_gpu:
-            flags = flags.cuda()
+                             batch_first=batch_first)
+        flags.to(self.device)
 
         # # print trace
         # flag_list = flags.cpu().numpy().tolist()
@@ -241,13 +241,13 @@ class Translate_Env(object):
         #         print(self.trg_vocab.ids2sent(seqs_y[i]))
         return x, y, flags
 
-    def prepare_data(self, seqs_x, seqs_y=None, cuda=False, batch_first=True):
+    def prepare_data(self, seqs_x, seqs_y=None, batch_first=True):
         """
         Args:
             eval ('bool'): indicator for eval/infer.
         Returns: padded data matrices
         """
-        def _np_pad_batch_2D(samples, pad, batch_first=True, cuda=True):
+        def _np_pad_batch_2D(samples, pad, batch_first=True):
             batch_size = len(samples)
             sizes = [len(s) for s in samples]
             max_size = max(sizes)
@@ -256,23 +256,21 @@ class Translate_Env(object):
                 x_np[ii, :sizes[ii]] = samples[ii]
             if batch_first is False:
                 x_np = np.transpose(x_np, [1, 0])
-            x = torch.tensor(x_np)
-            if cuda is True:
-                x = x.cuda()
+            x = torch.tensor(x_np).to(self.device)
             return x
 
         seqs_x = list(map(lambda s: [BOS] + s + [EOS], seqs_x))
         x = _np_pad_batch_2D(samples=seqs_x, pad=PAD,
-                             cuda=cuda, batch_first=batch_first)
+                             batch_first=batch_first)
         if seqs_y is None:
             return x
         seqs_y = list(map(lambda s: [BOS] + s + [EOS], seqs_y))
         y = _np_pad_batch_2D(seqs_y, pad=PAD,
-                             cuda=cuda, batch_first=batch_first)
+                             batch_first=batch_first)
 
         return x, y
 
-    def acc_validation(self, attacker, use_gpu):
+    def acc_validation(self, attacker):
         self.discriminator.eval()
         acc = 0
         sample_count = 0
@@ -283,7 +281,7 @@ class Translate_Env(object):
                 batch = next(self.data_iterator)
             seq_nums, seqs_x, seqs_y = batch
             x, y, flags = self.prepare_D_data(attacker,
-                                              seqs_x, seqs_y, use_gpu)
+                                              seqs_x, seqs_y)
             # set components to evaluation mode
             self.discriminator.eval()
             with torch.no_grad():
@@ -354,8 +352,7 @@ class Translate_Env(object):
             _, seqs_x, seqs_y = batch  # returned tensor type of the data
             try:
                 x, y, flags = self.prepare_D_data(attacker_model,
-                                                  seqs_x, seqs_y,
-                                                  use_gpu=True if self.device!="cpu" else False)
+                                                  seqs_x, seqs_y)
                 loss = self.compute_D_forward(seqs_x=x,
                                               seqs_y=y,
                                               gold_flags=flags)
@@ -370,7 +367,7 @@ class Translate_Env(object):
 
             # valid for accuracy / check for break (if any)
             if step % min_update_steps == 0:
-                acc = self.acc_validation(attacker_model, use_gpu=True if self.device != "cpu" else False)
+                acc = self.acc_validation(attacker_model)
                 print("discriminator acc: %2f" % acc)
                 summary_writer.add_scalar("discriminator", scalar_value=acc, global_step=base_steps+step)
                 if accuracy_bound and acc > accuracy_bound:
@@ -378,22 +375,23 @@ class Translate_Env(object):
                     return base_steps+step, acc
 
             if step > max_update_steps:
-                acc = self.acc_validation(attacker_model, use_gpu=True if self.device != "cpu" else False)
+                acc = self.acc_validation(attacker_model)
                 print("discriminator acc: %2f" % acc)
                 INFO("Reach maximum discriminator update. Finished.")
                 return base_steps+step, acc   # stop updates
 
-
     def translate(self, inputs=None):
         """
         translate the self.perturbed_src
-        :param input: if None, translate perturbed sequences stored in the environments
+        :param inputs: if None, translate perturbed sequences stored in the environments
         :return: list of translation results
         """
         if inputs is None:
             inputs = self.padded_src
         with torch.no_grad():
-            perturbed_results = beam_search(self.translate_model, beam_size=5, max_steps=150,
+            print(inputs.device)
+            perturbed_results = beam_search(self.translate_model,
+                                            beam_size=5, max_steps=150,
                                             src_seqs=inputs, alpha=-1.0,
                                             )
         perturbed_results = perturbed_results.cpu().numpy().tolist()
@@ -431,13 +429,12 @@ class Translate_Env(object):
                 target_word_id = self.w2vocab[word_id.item()][np.random.choice(len(self.w2vocab[word_id.item()]), 1)[0]]
                 target_of_step += [target_word_id]
             if self.device != "cpu" and not actions.is_cuda:
-                actions = actions.cuda()
+                actions = actions.to(self.device)
                 actions *= inputs_mask  # PAD is neglect
             # override the state src with random choice from candidates
             self.padded_src[:, self.index] *= (1 - actions)
             adjustification_ = torch.tensor(target_of_step)
-            if self.device != "cpu":
-                adjustification_ = adjustification_.cuda()
+            adjustification_ = adjustification_.to(self.device)
             self.padded_src[:, self.index] += adjustification_ * actions
 
             # update sequences' pointer
@@ -463,7 +460,7 @@ class Translate_Env(object):
                 distribution = distribution.detach().cpu().numpy()
                 discriminate_index = (1 - discriminate_index).cpu().numpy()
                 survival_value = distribution * discriminate_index * (1-np.array(self.terminal_signal))
-                reward += survival_value.sum()/2
+                reward += survival_value.sum() * self.r_s_weight
             else:  # only penalty for overall intermediate termination
                 reward = -1 * batch_size
 
@@ -490,9 +487,9 @@ class Translate_Env(object):
                     new_inputs.append(new_line)
                 # translate calculate padded_src
                 perturbed_result = self.translate(self.prepare_data(seqs_x=new_inputs,
-                                                  cuda=True if self.device != "cpu" else False))
+                                                  ))
                 # calculate final BLEU degredation:
-                bleu_degrade = []
+                episodic_rewards = []
                 for i, sent in enumerate(self.seqs_y):
                     # sentence is still surviving
                     if self.index >= self.sent_len[i]-1 and self.terminal_signal[i] == 0:
@@ -506,11 +503,14 @@ class Translate_Env(object):
                                                                                             ))
 
                             # print(relative_degraded_value, self.origin_bleu[i])
-                            relative_degraded_value/=self.origin_bleu[i]
-                        bleu_degrade.append(relative_degraded_value)
+                            relative_degraded_value /= self.origin_bleu[i]
+                        if self.adversarial:
+                            episodic_rewards.append(relative_degraded_value)
+                        else:
+                            episodic_rewards.append(-relative_degraded_value)
                     else:
-                        bleu_degrade.append(0.0)
-                reward += sum(bleu_degrade) * 10
+                        episodic_rewards.append(0.0)
+                reward += sum(episodic_rewards) * self.r_d_weight
 
             reward = reward/batch_size
 

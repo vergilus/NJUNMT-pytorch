@@ -13,7 +13,7 @@ class _Tokenizer(object):
     def __init__(self, **kwargs):
         pass
 
-    def tokenize(self, sent):
+    def tokenize(self, sent, special=None):
         raise NotImplementedError
 
     def detokenize(self, tokens):
@@ -21,11 +21,11 @@ class _Tokenizer(object):
 
 
 class WordTokenizer(_Tokenizer):
-
+    # tokenize word with white space
     def __init__(self, **kwargs):
         super(WordTokenizer, self).__init__(**kwargs)
 
-    def tokenize(self, sent):
+    def tokenize(self, sent, special=None):
         return sent.strip().split()
 
     def detokenize(self, tokens):
@@ -33,7 +33,7 @@ class WordTokenizer(_Tokenizer):
 
 
 class BPETokenizer(_Tokenizer):
-
+    # tokenize by BPE
     def __init__(self, codes=None, **kwargs):
         """ Byte-Pair-Encoding (BPE) Tokenizer
 
@@ -48,12 +48,19 @@ class BPETokenizer(_Tokenizer):
         else:
             self.bpe = None
 
-    def tokenize(self, sent):
+    def tokenize(self, sent, special=["<UNK>"]):
 
         if self.bpe is None:
             return sent.strip().split()
         else:
-            return sum([self.bpe.segment_word(w) for w in sent.strip().split()], [])
+            # return sum([self.bpe.segment_word(w) for w in sent.strip().split()], [])
+            results = []
+            for w in sent.strip().split():
+                if w not in special:
+                    results.append(self.bpe.segment_word(w))
+                else:
+                    results.append([w])
+            return sum(results, [])
 
     def detokenize(self, tokens):
 
@@ -73,7 +80,7 @@ class SPMTokenizer(_Tokenizer):
         print(codes)  # model directories
         self.spm.load(codes)
 
-    def tokenize(self, sent):
+    def tokenize(self, sent, special=None):
         return self.spm.encode_as_pieces(sent)
 
     # def tokenize(self, sent):

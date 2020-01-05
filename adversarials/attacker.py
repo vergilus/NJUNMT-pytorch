@@ -35,7 +35,7 @@ class Attacker(nn.Module):
         self.hidden_size = d_model
         self.src_embedding = Embeddings(num_embeddings=n_words,
                                         embedding_dim=self.input_size,
-                                        dropout=0.0,
+                                        dropout=dropout,
                                         add_position_embedding=False)
         # label representation
         self.src_gru = RNN(type="gru", batch_first=True, input_size=self.input_size,
@@ -50,6 +50,8 @@ class Attacker(nn.Module):
                                     out_features=self.hidden_size)
         self.input_linear = nn.Linear(in_features=self.input_size,
                                       out_features=self.hidden_size)
+        # layer norm for inputs feature
+        self.layer_norm = nn.LayerNorm(self.hidden_size, elementwise_affine=True)
 
         # outputs: actor distribution and critic value
         self.attacker_linear = nn.Linear(in_features=self.hidden_size,
@@ -85,6 +87,9 @@ class Attacker(nn.Module):
         x_ctx_mean = (ctx_x * x_pad_mask.unsqueeze(2)).sum(1) / x_pad_mask.unsqueeze(2).sum(1)
 
         attack_feature = self.input_linear(label_emb)+self.ctx_linear(x_ctx_mean)
+        # normalize the attack feature vector
+        attack_feature = self.layer_norm(attack_feature)
+
         return attack_feature
 
     def forward(self, x, label):
@@ -96,8 +101,8 @@ class Attacker(nn.Module):
                   value estimation for the state averaged value over batch
         """
         attack_feature = self.preprocess(x, label)
-        attack_out = F.softmax(self.dropout(self.attacker_linear(attack_feature)), dim=-1)
-        critic_out = F.elu(self.dropout(self.critic_linear(attack_feature)))
+        attack_out = F.softmax(self.attacker_linear(self.dropout(attack_feature)), dim=-1)
+        critic_out = F.elu(self.critic_linear(self.dropout(attack_feature)))
         return attack_out, critic_out
 
     def get_attack(self, x, label):
@@ -109,7 +114,7 @@ class Attacker(nn.Module):
         """
         # returns the attack actions
         attack_feature = self.preprocess(x, label)
-        attack_out = F.softmax(self.dropout(self.attacker_linear(attack_feature)), dim=-1)
+        attack_out = F.softmax(self.attacker_linear(self.dropout(attack_feature)), dim=-1)
         return attack_out
 
     def get_critic(self, x, label):
@@ -121,7 +126,7 @@ class Attacker(nn.Module):
         """
         # return value function of the current state
         attack_feature = self.preprocess(x, label)
-        critic_out = F.elu(self.dropout(self.critic_linear(attack_feature)))
+        critic_out = F.elu(self.critic_linear(self.dropout(attack_feature)))
         return critic_out
 
     def seq_attack(self, seqs_x_ids, w2vocab, training_mode):
@@ -140,16 +145,18 @@ class Attacker(nn.Module):
         # print(mask)
         with torch.no_grad():
             batch_size, max_steps = seqs_x_ids.shape
-            for t in range(1, max_steps-1):  # ignore BOS and EOS
-                inputs = seqs_x_ids[:, t-1:t+1]
-                actions = self.get_attack(x=perturbed_x_ids, label=inputs).argmax(dim=-1)
+            for t in range(1, max_steps-1):
+                inputs = seqs_x_ids[:, t-1:t+1]  # ignore BOS and EOS
+                actor_out, critic_out = self.forward(x=perturbed_x_ids, label=inputs)
+                actions = actor_out.argmax(dim=-1)
+                # this'll greatly reduce edits for more difficulty for D training
+                # actions *= critic_out.gt(0).squeeze().long()
                 # inputs_np = inputs.numpy()
                 target_of_step = []
                 for batch_index in range(batch_size):
                     word_id = inputs[batch_index][1]
-                    # print(word_id.item())
-                    # print(word_id.item(),len(w2vocab[word_id.item()]))
-                    target_word_id = w2vocab[word_id.item()][np.random.choice(len(w2vocab[word_id.item()]), 1)[0]]
+                    # choose the least similar candidate
+                    target_word_id = w2vocab[word_id.item()][0]  # np.random.choice(len(w2vocab[word_id.item()]), 1)[0]
                     target_of_step += [target_word_id]
                 # override the perturbed results with random choice from candidates
                 perturbed_x_ids[:, t] *= (1-actions)

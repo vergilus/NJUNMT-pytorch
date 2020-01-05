@@ -1,22 +1,31 @@
 attack_configs:
   seed: 1234
-  victim_model: "/home/user_data/zouw/Models/save_dl4mt_en2de/transformer.best.final"
-  victim_configs: "/home/user_data/zouw/Models/transformer_wmt14_en2de.yaml"
+  shuffle: true
+  use_bucket: true
+  batching_key: "samples"
+  batch_size: 50
+  buffer_size: 100000
+  save_freq: 100
+  num_kept_checkpoints: 1
+  victim_model: "/home/user_data/zouw/Models/save_tf_en2de_bpe/transformer.best.final"
+  victim_configs: "/home/user_data/zouw/Models/transformer_wmt14_en2de_bpe.yaml"
   pinyin_data: ""
   init_perturb_rate: 0.4
   gamma: 0.99
   tau: 1.0
   entropy_coef: 0.05
   value_coef: 0.5
+  adversarial: true
+  r_s_weight: 0.5
+  r_d_weight: 10
 
 attacker_configs:
   attacker_update_steps: 120
-  attacker_batch: 50
   attacker_model_configs:
     action_space: 2
     action_roll_space: 1
     d_word_vec: 512
-    d_model: 128
+    d_model: 256
     dropout: 0.5
 
   attacker_optimizer_configs:
@@ -26,22 +35,21 @@ attacker_configs:
     optimizer_params: ~
     schedule_method: rsqrt
     scheduler_configs:
-      d_model: 128
+      d_model: 256
       warmup_steps: 100
 
 discriminator_configs:
   discriminator_update_steps: 80
-  discriminator_batch: 50
-  acc_bound: 0.85
-  converged_bound: 0.52
+  acc_bound: 0.9
+  converged_bound: 0.53
   acc_valid_freq: 10
   acc_valid_batch_size: 50
-  patience: 15
+  patience: 10
 
   discriminator_model_configs:
     d_word_vec: 512
-    d_model: 128
-    dropout: 0.0
+    d_model: 256
+    dropout: 0.1
     update_embedding: true
 
   discriminator_optimizer_configs:
@@ -51,19 +59,6 @@ discriminator_configs:
     optimizer_params: ~
     schedule_method: rsqrt
     scheduler_configs:
-      d_model: 128
+      d_model: 256
       warmup_steps: 5
 
-training_configs:
-  seed: 1234
-  max_epochs: 20
-  shuffle: true
-  use_bucket: true
-  batch_size: 256
-  buffer_size: 1024
-  batching_key: "samples"
-  update_cycle: 4
-  save_freq: 100
-  num_kept_checkpoints: 1
-  num_kept_best_model: 1
-  loss_valid_freq: 10

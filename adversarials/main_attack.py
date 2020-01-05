@@ -12,7 +12,9 @@ from tensorboardX import SummaryWriter
 import nltk.translate.bleu_score as bleu
 import argparse
 import torch
-import torch.multiprocessing as mp
+import torch.multiprocessing as _mp
+
+
 
 # "/home/zouw/pycharm_project_NMT_torch/configs/nist_zh2en_attack.yaml"
 
@@ -40,24 +42,25 @@ parser.add_argument("--seed", type=int, default=1,
 def run():
     # default actor threads as 1
     os.environ["OMP_NUM_THREADS"] = "1"
-
+    mp = _mp.get_context('spawn')
     args = parser.parse_args()
     if not os.path.exists(args.save_to):
         os.mkdir(args.save_to)
-    with open(args.config_path) as f:
+    with open(args.config_path, "r") as f,\
+         open(os.path.join(args.save_to, "current_attack_configs.yaml"), "w") as current_configs:
         configs = yaml.load(f)
+        yaml.dump(configs, current_configs)
     attack_configs = configs["attack_configs"]
     attacker_configs = configs["attacker_configs"]
     attacker_model_configs = attacker_configs["attacker_model_configs"]
     attacker_optimizer_configs = attacker_configs["attacker_optimizer_configs"]
     discriminator_configs = configs["discriminator_configs"]
-    training_configs = configs["training_configs"]
+    # training_configs = configs["training_configs"]
 
     # initial checkpoint saver and best saver for global model
     checkpoint_saver = Saver(save_prefix="{0}.ckpt".format(os.path.join(args.save_to, "ACmodel")),
-                             num_max_keeping=training_configs["num_kept_checkpoints"])
-
-    GlobalNames.SEED = training_configs["seed"]
+                             num_max_keeping=attack_configs["num_kept_checkpoints"])
+    GlobalNames.SEED = attack_configs["seed"]
     # the Global variable of  USE_GPU is mainly used for environments
     GlobalNames.USE_GPU = args.use_gpu
     torch.manual_seed(GlobalNames.SEED)
@@ -73,7 +76,7 @@ def run():
                         vocabulary=src_vocab,),
         TextLineDataset(data_path=data_configs["train_data"][1],
                         vocabulary=trg_vocab,),
-        shuffle=True
+        shuffle=attack_configs["shuffle"]
     )  # we build the parallel data sets and iterate inside a thread
 
     # global model variables (trg network to save the results)
@@ -108,6 +111,7 @@ def run():
         optimizer = None
         scheduler = None
 
+    # load from checkpoint: only agent
     checkpoint_saver.load_latest(model=global_attacker,
                                  optim=optimizer,
                                  lr_scheduler=scheduler)
@@ -118,11 +122,12 @@ def run():
         devices = []
         for i in range(torch.cuda.device_count()):
             devices += ["cuda:%d" % i]
+        print("available gpus:", devices)
     else:
         device = "cpu"
         devices = [device]
 
-    # process = []
+    process = []
     counter = mp.Value("i", 0)
     lock = mp.Lock()  # for multiple attackers update
 
@@ -133,13 +138,14 @@ def run():
           optimizer, scheduler,
           checkpoint_saver)
 
-    valid(args.n, "cuda:0", args,
+    valid(args.n, device, args,
          attack_configs, discriminator_configs,
          src_vocab, trg_vocab, data_set,
          global_attacker, attacker_configs, counter)
 
-    # # run multiple training process of local attacker to update global one
+    # run multiple training process of local attacker to update global one
     # for rank in range(args.n):
+    #     print("initialize training thread on cuda:%d" % (rank+1))
     #     p = mp.Process(target=train,
     #                    args=(rank, "cuda:%d" % (rank+1), args, counter, lock,
     #                          attack_configs, discriminator_configs,
@@ -149,9 +155,10 @@ def run():
     #                          checkpoint_saver))
     #     p.start()
     #     process.append(p)
-    # # run the attack test for initiation
+    # # run the dev thread for initiation
+    # print("initialize dev thread on cuda:0")
     # p = mp.Process(target=valid,
-    #                args=(args.n, "cuda:0", args,
+    #                args=(0, "cuda:0", args,
     #                      attack_configs, discriminator_configs,
     #                      src_vocab, trg_vocab, data_set,
     #                      global_attacker, attacker_configs,
@@ -189,9 +196,9 @@ def valid(rank, device, args,
     torch.manual_seed(GlobalNames.SEED + rank)
     attacker_model_configs = attacker_configs["attacker_model_configs"]
     valid_iterator = DataIterator(dataset=data_set,
-                                  batch_size=attacker_configs["attacker_batch"],
-                                  use_bucket=True,
-                                  buffer_size=100000,
+                                  batch_size=attack_configs["batch_size"],
+                                  use_bucket=attack_configs["use_bucket"],
+                                  buffer_size=attack_configs["buffer_size"],
                                   numbering=True)
     valid_iterator = valid_iterator.build_generator()
     env = Translate_Env(attack_configs=attack_configs,
@@ -199,7 +206,7 @@ def valid(rank, device, args,
                         src_vocab=src_vocab,
                         trg_vocab=trg_vocab,
                         data_iterator=valid_iterator,
-                        save_to=args.save_to, device="cuda")
+                        save_to=args.save_to, device=device)
     INFO("finish building validation env")
     # need a directory for saving and loading
     summary_writer = SummaryWriter(log_dir=os.path.join(args.save_to, "dev_env"))
@@ -207,7 +214,7 @@ def valid(rank, device, args,
     local_attacker = attacker.Attacker(src_vocab.max_n_words,
                                        **attacker_model_configs)
     if device != "cpu":
-        local_attacker.cuda()
+        local_attacker = local_attacker.to(device)
     local_attacker.eval()
 
     def trans_from_vocab(vocab, ids):
@@ -249,13 +256,14 @@ def valid(rank, device, args,
                     target_of_step = []
                     for batch_index in range(batch_size):
                         word_id = inputs[batch_index][1]
+                        # random choice from candidates
                         target_word_id = env.w2vocab[word_id.item()][np.random.choice(len(env.w2vocab[word_id.item()]), 1)[0]]
                         target_of_step += [target_word_id]
                     # override the perturbed results with random choice from candidates
                     perturbed_x_ids[:, t] *= (1 - actions)
                     adjustification_ = torch.tensor(target_of_step, device=inputs.device)
                     if GlobalNames.USE_GPU:
-                        adjustification_ = adjustification_.cuda()
+                        adjustification_ = adjustification_.to(device)
                     perturbed_x_ids[:, t] += adjustification_ * actions
                 # apply mask on the results
                 perturbed_x_ids *= (1 - mask)
@@ -353,9 +361,9 @@ def train(rank, device, args, counter, lock,
     torch.manual_seed(GlobalNames.SEED + rank)
 
     attack_iterator = DataIterator(dataset=data_set,
-                                   batch_size=attacker_configs["attacker_batch"],
+                                   batch_size=attack_configs["batch_size"],
                                    use_bucket=True,
-                                   buffer_size=100000,
+                                   buffer_size=attack_configs["buffer_size"],
                                    numbering=True)
 
     summary_writer = SummaryWriter(log_dir=os.path.join(args.save_to, "train_env%d" % rank))
@@ -437,7 +445,7 @@ def train(rank, device, args, counter, lock,
                 else:  # reset patience if discriminator is refreshed
                     patience_t = patience
 
-            if saver and local_steps % 50 == 0:
+            if saver and local_steps % attack_configs["save_freq"] == 0:
                 saver.save(global_step=local_steps,
                            model=global_attacker,
                            optim=optimizer,
@@ -507,8 +515,8 @@ def train(rank, device, args, counter, lock,
             R = torch.zeros(1, 1)
             gae = torch.zeros(1, 1)
             if device != "cpu":
-                R = R.cuda()
-                gae = gae.cuda()
+                R = R.to(device)
+                gae = gae.to(device)
 
             if not done:  # calculate value loss
                 value = local_attacker.get_critic(padded_src, padded_src[:, env.index - 1:env.index + 1])
@@ -520,6 +528,7 @@ def train(rank, device, args, counter, lock,
 
             # collect values for training
             for i in reversed((range(len(rewards)))):
+                # value loss and policy loss must be clipped to stabilize training
                 R = attack_configs["gamma"] * R + rewards[i]
                 advantage = R - values[i]
                 value_loss = value_loss + 0.5 * advantage.pow(2)
@@ -538,7 +547,10 @@ def train(rank, device, args, counter, lock,
             # we decay the loss according to discriminator's accuracy as a trust region constrain
             summary_writer.add_scalar("policy_loss", scalar_value=policy_loss * trust_acc, global_step=local_steps)
             summary_writer.add_scalar("value_loss", scalar_value=value_loss * trust_acc, global_step=local_steps)
-            (policy_loss + attack_configs["value_coef"] * value_loss).backward()
+
+            total_loss = trust_acc * policy_loss + \
+                    trust_acc * attack_configs["value_coef"] * value_loss
+            total_loss.backward()
 
             if attacker_optimizer_configs["schedule_method"] is not None and attacker_optimizer_configs[
                 "schedule_method"] != "loss":

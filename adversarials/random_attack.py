@@ -16,18 +16,18 @@ PAD = Vocabulary.PAD
 BOS = Vocabulary.BOS
 EOS = Vocabulary.EOS
 UNK = Vocabulary.UNK
-ratio = 0.35
+ratio = 0.4
 victim_model_path = "/home/user_data/zouw/Models/save_tf_zh2en_bpe/transformer.best.final"
 victim_config_path = "/home/user_data/zouw/Models/transformer_nist_zh2en_bpe.yaml"
-test_file_path = ["/home/public_data/nmtdata/nist_zh-en_1.34m/test/mt08.src",
-                  "/home/public_data/nmtdata/nist_zh-en_1.34m/test/mt08.ref0"]
+test_file_path = ["/home/public_data/nmtdata/nist_zh-en_1.34m/test/mt05.src",
+                  "/home/public_data/nmtdata/nist_zh-en_1.34m/test/mt05.ref0"]
 test_file_path_temp = ["mt02.zh.tmp",
                        "mt02.en.tmp"]
 near_candidates_path = "/home/zouw/pycharm_project_NMT_torch/adversarials/attack_zh2en_tf_log/near_vocab"
 pinyin_path = "/home/user_data/zouw/chnchar2pinyin.dat"
-output_path = "search35_attack_mt08"
+output_path = "search_attack_mt05_nounk"
 use_gpu = True
-unk_ignore = False
+unk_ignore = True
 
 def load_model_parameters(path, map_location="cpu"):
     state_dict = torch.load(path, map_location=map_location)
@@ -114,8 +114,8 @@ print("build vocabulary")
 vocab_src = Vocabulary(**data_configs["vocabularies"][0])
 vocab_trg = Vocabulary(**data_configs["vocabularies"][1])
 
-# load pin if there is any
-if pinyin_path != "":
+if not unk_ignore and pinyin_path != "":
+    # load pin if there is any
     # for Chinese we adopt
     print("collect pinyin data for gen_UNK, this would take a while")
     char2pyDict, py2charDict = collect_pinyin(pinyin_path=pinyin_path,
@@ -216,7 +216,10 @@ for batch in valid_iterator:
             if final_cand_id == 0:  # it's meaningless to attack
                 perturbed_seqs_x[0][position] = src_token_id
             else:  # apply attack
-                perturbed_seqs_x[0][position] = final_cand_id
+                if unk_ignore and final_cand_id == UNK:  # check for unk
+                    perturbed_seqs_x[0][position] = src_token_id
+                else:
+                    perturbed_seqs_x[0][position] = final_cand_id
         else:  # ignore origin UNK
             continue
 
