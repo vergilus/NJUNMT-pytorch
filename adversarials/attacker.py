@@ -161,8 +161,8 @@ class Attacker(nn.Module):
                 # override the perturbed results with random choice from candidates
                 perturbed_x_ids[:, t] *= (1-actions)
                 adjustification_ = torch.tensor(target_of_step, device=inputs.device)
-                if GlobalNames.USE_GPU:
-                    adjustification_ = adjustification_.cuda()
+                if actions.is_cuda:
+                    adjustification_ = adjustification_.to(actions.get_device())
                 perturbed_x_ids[:, t] += adjustification_ * actions
             # by default we perturb all the seqs_x
             flags = torch.ones(batch_size, device=inputs.device)

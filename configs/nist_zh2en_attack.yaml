@@ -44,7 +44,7 @@ discriminator_configs:
   converged_bound: 0.53
   acc_valid_freq: 10
 #  acc_valid_batch_size: 50
-  patience: 10
+  patience: 15
 
   discriminator_model_configs:
     d_word_vec: 512

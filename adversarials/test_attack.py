@@ -12,7 +12,7 @@ import torch
 
 parser = argparse.ArgumentParser()
 #
-parser.add_argument("--source_path", type=str, default="/home/public_data/nmtdata/nist_zh-en_1.34m/test/mt03.src", # /zouw/pycharm_project_NMT_torch/adversarials/attack_zh2en_tf_log/mt02/perturbed_src
+parser.add_argument("--source_path", type=str, default="/home/public_data/nmtdata/nist_zh-en_1.34m/test/mt02.src", # /zouw/pycharm_project_NMT_torch/adversarials/attack_zh2en_tf_log/mt02/perturbed_src
                     help="the path for input files")
 parser.add_argument("--model_path", type=str,
                     default="/home/zouw/pycharm_project_NMT_torch/adversarials/attack_zh2en_tf_log/ACmodel.final")
@@ -222,7 +222,6 @@ def test_attack():
                         word_id = inputs[batch_index][1]
                         # select least similar candidate based on victim embedding
                         target_word_id = w2vocab[word_id.item()][0]  #[np.random.choice(len(w2vocab[word_id.item()]), 1)[0]]
-
                         # select nearest candidate based on victim embedding
                         # choose least similar candidates
                         # origin_emb = global_attacker.src_embedding(word_id)
@@ -231,7 +230,6 @@ def test_attack():
                         #     .div((candidates_emb*candidates_emb).sum(dim=-1))\
                         #     .argmax(dim=-1).item()
                         # target_word_id = w2vocab[word_id.item()][nearest]
-
                         if args.unk_ignore and target_word_id == UNK:
                             # undo this attack if UNK is set to be ignored
                             target_word_id = word_id.item()

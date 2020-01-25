@@ -14,8 +14,6 @@ import argparse
 import torch
 import torch.multiprocessing as _mp
 
-
-
 # "/home/zouw/pycharm_project_NMT_torch/configs/nist_zh2en_attack.yaml"
 
 parser = argparse.ArgumentParser()
@@ -60,8 +58,8 @@ def run():
     # initial checkpoint saver and best saver for global model
     checkpoint_saver = Saver(save_prefix="{0}.ckpt".format(os.path.join(args.save_to, "ACmodel")),
                              num_max_keeping=attack_configs["num_kept_checkpoints"])
-    GlobalNames.SEED = attack_configs["seed"]
     # the Global variable of  USE_GPU is mainly used for environments
+    GlobalNames.SEED = attack_configs["seed"]
     GlobalNames.USE_GPU = args.use_gpu
     torch.manual_seed(GlobalNames.SEED)
 
@@ -131,44 +129,44 @@ def run():
     counter = mp.Value("i", 0)
     lock = mp.Lock()  # for multiple attackers update
 
-    train(0, device, args, counter, lock,
-          attack_configs, discriminator_configs,
-          src_vocab, trg_vocab, data_set,
-          global_attacker, attacker_configs,
-          optimizer, scheduler,
-          checkpoint_saver)
-
-    valid(args.n, device, args,
-         attack_configs, discriminator_configs,
-         src_vocab, trg_vocab, data_set,
-         global_attacker, attacker_configs, counter)
+    # train(0, device, args, counter, lock,
+    #       attack_configs, discriminator_configs,
+    #       src_vocab, trg_vocab, data_set,
+    #       global_attacker, attacker_configs,
+    #       optimizer, scheduler,
+    #       checkpoint_saver)
+    #
+    # valid(args.n, device, args,
+    #      attack_configs, discriminator_configs,
+    #      src_vocab, trg_vocab, data_set,
+    #      global_attacker, attacker_configs, counter)
 
     # run multiple training process of local attacker to update global one
-    # for rank in range(args.n):
-    #     print("initialize training thread on cuda:%d" % (rank+1))
-    #     p = mp.Process(target=train,
-    #                    args=(rank, "cuda:%d" % (rank+1), args, counter, lock,
-    #                          attack_configs, discriminator_configs,
-    #                          src_vocab, trg_vocab, data_set,
-    #                          global_attacker, attacker_configs,
-    #                          optimizer, scheduler,
-    #                          checkpoint_saver))
-    #     p.start()
-    #     process.append(p)
-    # # run the dev thread for initiation
-    # print("initialize dev thread on cuda:0")
-    # p = mp.Process(target=valid,
-    #                args=(0, "cuda:0", args,
-    #                      attack_configs, discriminator_configs,
-    #                      src_vocab, trg_vocab, data_set,
-    #                      global_attacker, attacker_configs,
-    #                      counter)
-    #                )
-    # p.start()
-    # process.append(p)
-    #
-    # for p in process:
-    #     p.join()
+    for rank in range(args.n):
+        print("initialize training thread on cuda:%d" % (rank+1))
+        p = mp.Process(target=train,
+                       args=(rank, "cuda:%d" % (rank+1), args, counter, lock,
+                             attack_configs, discriminator_configs,
+                             src_vocab, trg_vocab, data_set,
+                             global_attacker, attacker_configs,
+                             optimizer, scheduler,
+                             checkpoint_saver))
+        p.start()
+        process.append(p)
+    # run the dev thread for initiation
+    print("initialize dev thread on cuda:0")
+    p = mp.Process(target=valid,
+                   args=(0, "cuda:0", args,
+                         attack_configs, discriminator_configs,
+                         src_vocab, trg_vocab, data_set,
+                         global_attacker, attacker_configs,
+                         counter)
+                   )
+    p.start()
+    process.append(p)
+
+    for p in process:
+        p.join()
 
 
 def valid(rank, device, args,
@@ -193,7 +191,11 @@ def valid(rank, device, args,
     :param counter: multiprocessing counter
     :return:
     """
+    # this is for multi-processing, GlobalNames can not be direct inherited
+    GlobalNames.USE_GPU = args.use_gpu
+    GlobalNames.SEED = attack_configs["seed"]
     torch.manual_seed(GlobalNames.SEED + rank)
+
     attacker_model_configs = attacker_configs["attacker_model_configs"]
     valid_iterator = DataIterator(dataset=data_set,
                                   batch_size=attack_configs["batch_size"],
@@ -358,6 +360,9 @@ def train(rank, device, args, counter, lock,
     attacker_model_configs = attacker_configs["attacker_model_configs"]
     attacker_optimizer_configs = attacker_configs["attacker_optimizer_configs"]
 
+    # this is for multi-processing, GlobalNames can not be direct inherited
+    GlobalNames.USE_GPU = args.use_gpu
+    GlobalNames.SEED = attack_configs["seed"]
     torch.manual_seed(GlobalNames.SEED + rank)
 
     attack_iterator = DataIterator(dataset=data_set,
@@ -451,7 +456,7 @@ def train(rank, device, args, counter, lock,
                            optim=optimizer,
                            lr_scheduler=scheduler)
 
-                if trust_acc < converged_bound and patience_t == patience-1:
+                if trust_acc < converged_bound:  # and patience_t == patience-1:
                     # we only save the first params reaching acc_bound, because the latter one
                     # tends to deteriorate in exploration.
                     torch.save(global_attacker.state_dict(), os.path.join(args.save_to, "ACmodel.final"))

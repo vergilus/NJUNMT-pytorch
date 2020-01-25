@@ -44,7 +44,7 @@ def get_attn_causal_mask(seq):
     subsequent_mask = np.triu(np.ones(attn_shape), k=1).astype('uint8')
     subsequent_mask = torch.from_numpy(subsequent_mask)
     if seq.is_cuda:
-        subsequent_mask = subsequent_mask.cuda()
+        subsequent_mask = subsequent_mask.to(seq.get_device())
     return subsequent_mask
 
 

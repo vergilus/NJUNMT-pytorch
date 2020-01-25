@@ -204,8 +204,8 @@ class Adafactor(torch.optim.Optimizer):
                 # beta2 += scale_correction
                 if len(grad.shape) >= 2:
                     # factored along the last 2 dimensions
-                    if grad_squared_mean.is_cuda:
-                        v_r, v_c = state["v_r"].cuda(), state["v_c"].cuda()
+                    if grad.is_cuda:
+                        v_r, v_c = state["v_r"].to(grad.get_device()), state["v_c"].to(grad.get_device())
                     else:
                         v_r, v_c = state["v_r"], state["v_c"]
                     v_r.mul_(beta2).add_((1.0 - beta2)*torch.mean(grad_spuared, dim=-1))
@@ -215,8 +215,8 @@ class Adafactor(torch.optim.Optimizer):
                     c_factor = torch.rsqrt(v_c)
                     U = grad.mul(r_factor.unsqueeze(-1)).mul(c_factor.unsqueeze(-2))
                 else:
-                    if grad_squared_mean.is_cuda:
-                        v = state['v'].cuda()
+                    if grad.is_cuda:
+                        v = state['v'].to(grad.get_device())
                     else:
                         v = state['v']
                     v.mul_(beta2).add_((1.0 - beta2)*grad_spuared)
@@ -229,8 +229,8 @@ class Adafactor(torch.optim.Optimizer):
 
                 if beta1 > 0:
                     # we have momentum
-                    if grad_squared_mean.is_cuda:
-                        m = state['m'].cuda()
+                    if grad.is_cuda:
+                        m = state['m'].to(grad.get_device())
                     else:
                         m = state['m']
                     subtrahend.mul_(1.0 - beta1).add_(beta1*m)

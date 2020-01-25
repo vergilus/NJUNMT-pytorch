@@ -421,7 +421,7 @@ class Translate_Env(object):
             batch_size = actions.shape[0]
             reward = 0
             inputs = self.padded_src[:, self.index]
-            inputs_mask = 1-inputs.eq(PAD)
+            inputs_mask = ~inputs.eq(PAD)
             target_of_step = []
             # modification on sequences (state)
             for batch_index in range(batch_size):

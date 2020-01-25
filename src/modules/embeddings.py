@@ -54,8 +54,8 @@ class Embeddings(nn.Module):
         position = torch.arange(0, length).float()
         inv_timescales = torch.arange(0, num_timescales).float()
         if x.is_cuda:
-            position = position.cuda()
-            inv_timescales = inv_timescales.cuda()
+            position = position.to(x.get_device())
+            inv_timescales = inv_timescales.to(x.get_device())
 
         inv_timescales.mul_(-log_timescale_increment).exp_().mul_(min_timescale)
         scaled_time = position.unsqueeze(1).expand(
