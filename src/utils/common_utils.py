@@ -252,6 +252,22 @@ class Saver(object):
         with open(self.save_prefix, "w") as f:
             f.write("\n".join(self.save_list))
 
+    def raw_save(self, **kwargs):
+        """
+        simply save the parameter in kwargs
+        """
+        state_dict = dict()
+
+        for key, obj in kwargs.items():
+            if self.savable(obj):
+                state_dict[key] = obj.state_dict()
+        save_to_path = '{0}.{1}'.format(self.save_prefix, "local")
+        torch.save(state_dict, save_to_path)
+
+        with open(self.save_prefix, "w") as f:
+            f.write(save_to_path)
+
+
     def load_latest(self, **kwargs):
 
         if len(self.save_list) == 0:

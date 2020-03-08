@@ -38,21 +38,21 @@ attacker_configs:
       d_model: 256
       warmup_steps: 100
 
-discriminator_configs:
-  discriminator_update_steps: 100
+predictor_configs:
+  predictor_update_steps: 100
   acc_bound: 0.90
   converged_bound: 0.53
   acc_valid_freq: 10
 #  acc_valid_batch_size: 50
   patience: 100
 
-  discriminator_model_configs:
+  predictor_model_configs:
     d_word_vec: 512
     d_model: 256
     dropout: 0.2
     update_embedding: true
 
-  discriminator_optimizer_configs:
+  predictor_optimizer_configs:
     optimizer: "adafactor"
     learning_rate: 0.05
     grad_clip: -1.0

@@ -79,8 +79,8 @@ def tensor_gather_helper(gather_indices,
                          gather_shape):
     range_ = (torch.arange(0, batch_size) * beam_size).long()
 
-    if GlobalNames.USE_GPU:
-        range_ = range_.cuda()
+    if gather_indices.is_cuda:
+        range_ = range_.to(gather_indices.get_device())
 
     gather_indices_ = (gather_indices + torch.unsqueeze(range_, 1)).view(-1)
 

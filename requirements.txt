@@ -1,6 +1,5 @@
 torch>=0.4.0
-pyyaml
+yaml
 tensorboardX
 tqdm
 sacrebleu
-sentencepiece

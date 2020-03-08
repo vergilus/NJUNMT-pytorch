@@ -55,9 +55,9 @@ def run():
     discriminator_configs = configs["discriminator_configs"]
     # training_configs = configs["training_configs"]
 
-    # initial checkpoint saver and best saver for global model
-    checkpoint_saver = Saver(save_prefix="{0}.ckpt".format(os.path.join(args.save_to, "ACmodel")),
-                             num_max_keeping=attack_configs["num_kept_checkpoints"])
+    # initial best saver for global model
+    global_saver = Saver(save_prefix="{0}.final".format(os.path.join(args.save_to, "ACmodel")),
+                         num_max_keeping=attack_configs["num_kept_checkpoints"])
     # the Global variable of  USE_GPU is mainly used for environments
     GlobalNames.SEED = attack_configs["seed"]
     GlobalNames.USE_GPU = args.use_gpu
@@ -109,10 +109,10 @@ def run():
         optimizer = None
         scheduler = None
 
-    # load from checkpoint: only agent
-    checkpoint_saver.load_latest(model=global_attacker,
-                                 optim=optimizer,
-                                 lr_scheduler=scheduler)
+    # load from checkpoint for global model
+    global_saver.load_latest(model=global_attacker,
+                             optim=optimizer,
+                             lr_scheduler=scheduler)
 
     if args.use_gpu:
         # collect available devices and distribute env on the available gpu
@@ -150,7 +150,7 @@ def run():
                              src_vocab, trg_vocab, data_set,
                              global_attacker, attacker_configs,
                              optimizer, scheduler,
-                             checkpoint_saver))
+                             global_saver))
         p.start()
         process.append(p)
     # run the dev thread for initiation
@@ -275,9 +275,9 @@ def valid(rank, device, args,
             trg_y = trans_from_vocab(trg_vocab, env.seqs_y)
             trans_y_p = trans_from_vocab(trg_vocab, perturbed_result)
             trans_y = trans_from_vocab(trg_vocab, env.origin_result)
-            print("golden:", trg_y)
-            print("origin_results:", trans_y)
-            print("perturbed_results:", trans_y_p)
+            # print("golden:", trg_y)
+            # print("origin_results:", trans_y)
+            # print("perturbed_results:", trans_y_p)
 
             # calculate final BLEU degredation:
             perturbed_bleu = []
@@ -300,14 +300,14 @@ def valid(rank, device, args,
 
             trans_x = trans_from_vocab(src_vocab, padded_src)
             trans_x_p = trans_from_vocab(src_vocab, perturbed_x_ids)
-            print(trans_x)
-            print(trans_x_p)
+            # print(trans_x)
+            # print(trans_x_p)
 
             for i in range(len(padded_src)):
                 src = [label for label in padded_src[i] if label != PAD]
                 perturbed_src = [label for label in perturbed_x_ids[i] if label != PAD]
                 edit_bleu += [bleu.sentence_bleu(references=[src], hypothesis=perturbed_src, emulate_multibleu=True)]
-            print("edit_bleu: ", edit_bleu)
+            # print("edit_bleu: ", edit_bleu)
             summary_writer.add_scalar("edit_bleu",
                                       scalar_value=sum(edit_bleu)/len(edit_bleu),
                                       global_step=episode_count)
@@ -365,6 +365,10 @@ def train(rank, device, args, counter, lock,
     GlobalNames.SEED = attack_configs["seed"]
     torch.manual_seed(GlobalNames.SEED + rank)
 
+    # initiate local saver and load checkpoint if possible
+    local_saver = Saver(save_prefix="{0}.local".format(os.path.join(args.save_to, "train_env%d" % rank, "ACmodel")),
+                        num_max_keeping=attack_configs["num_kept_checkpoints"])
+
     attack_iterator = DataIterator(dataset=data_set,
                                    batch_size=attack_configs["batch_size"],
                                    use_bucket=True,
@@ -397,6 +401,10 @@ def train(rank, device, args, counter, lock,
                 scheduler = None
         else:
             scheduler = None
+
+    local_saver.load_latest(model=local_attacker,
+                            optim=optimizer,
+                            lr_scheduler=scheduler)
 
     attacker_iterator = attack_iterator.build_generator()
     env = Translate_Env(attack_configs=attack_configs,
@@ -451,15 +459,15 @@ def train(rank, device, args, counter, lock,
                     patience_t = patience
 
             if saver and local_steps % attack_configs["save_freq"] == 0:
-                saver.save(global_step=local_steps,
-                           model=global_attacker,
-                           optim=optimizer,
-                           lr_scheduler=scheduler)
+                local_saver.save(global_step=local_steps,
+                                 model=local_attacker,
+                                 optim=optimizer,
+                                 lr_scheduler=scheduler)
 
                 if trust_acc < converged_bound:  # and patience_t == patience-1:
-                    # we only save the first params reaching acc_bound, because the latter one
-                    # tends to deteriorate in exploration.
+                    # we only save the global params reaching acc_bound
                     torch.save(global_attacker.state_dict(), os.path.join(args.save_to, "ACmodel.final"))
+                    # saver.raw_save(model=global_attacker)
 
             if patience_t == 0:
                 WARN("maximum patience reached. Training Thread should stop")

@@ -42,7 +42,7 @@ class Encoder(nn.Module):
         super(Encoder, self).__init__()
 
         # Use PAD
-        self.embedding = Embeddings(num_embeddings=n_words,
+        self.embeddings = Embeddings(num_embeddings=n_words,
                                     embedding_dim=input_size,
                                     dropout=0.0,
                                     add_position_embedding=False)
@@ -57,7 +57,7 @@ class Encoder(nn.Module):
         """
         x_mask = x.detach().eq(PAD)
 
-        emb = self.embedding(x)
+        emb = self.embeddings(x)
 
         ctx, _ = self.gru(emb, x_mask)
 
@@ -79,7 +79,7 @@ class Decoder(nn.Module):
         self.hidden_size = hidden_size
         self.context_size = hidden_size * 2
 
-        self.embedding = Embeddings(num_embeddings=n_words,
+        self.embeddings = Embeddings(num_embeddings=n_words,
                                     embedding_dim=input_size,
                                     dropout=0.0,
                                     add_position_embedding=False)
@@ -119,7 +119,7 @@ class Decoder(nn.Module):
 
             no_pad_mask = 1.0 - mask.float()
             ctx_mean = (context * no_pad_mask.unsqueeze(2)).sum(1) / no_pad_mask.unsqueeze(2).sum(1)
-            dec_init = F.tanh(self.linear_bridge(ctx_mean))
+            dec_init = torch.tanh(self.linear_bridge(ctx_mean))
 
         elif self.bridge_type == "zero":
             batch_size = context.size(0)
@@ -133,7 +133,7 @@ class Decoder(nn.Module):
 
     def forward(self, y, context, context_mask, hidden, one_step=False, cache=None):
 
-        emb = self.embedding(y)  # [seq_len, batch_size, dim]
+        emb = self.embeddings(y)  # [seq_len, batch_size, dim]
 
         if one_step:
             (out, attn), hidden = self.cgru_cell(emb, hidden, context, context_mask, cache)
@@ -152,7 +152,7 @@ class Decoder(nn.Module):
 
         logits = self.linear_input(emb) + self.linear_hidden(out) + self.linear_ctx(attn)
 
-        logits = F.tanh(logits)
+        logits = torch.tanh(logits)
 
         logits = self.dropout(logits)  # [seq_len, batch_size, dim]
 
@@ -226,7 +226,7 @@ class DL4MT(NMTModel):
             generator = Generator(n_words=n_tgt_vocab, hidden_size=d_word_vec, padding_idx=PAD)
         else:
             generator = Generator(n_words=n_tgt_vocab, hidden_size=d_word_vec, padding_idx=PAD,
-                                  shared_weight=self.decoder.embedding.embeddings.weight
+                                  shared_weight=self.decoder.embeddings.embeddings.weight
                                   )
         self.generator = generator
 

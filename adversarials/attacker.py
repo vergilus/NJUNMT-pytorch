@@ -41,10 +41,6 @@ class Attacker(nn.Module):
         self.src_gru = RNN(type="gru", batch_first=True, input_size=self.input_size,
                            hidden_size=self.hidden_size, bidirectional=True)
 
-        # MLP attacker
-        self.attacker = nn.Linear(in_features=self.hidden_size,
-                                  out_features=self.hidden_size)
-
         # inputs: current input, avg_seqs as ctx
         self.ctx_linear = nn.Linear(in_features=2*self.hidden_size,
                                     out_features=self.hidden_size)
@@ -63,7 +59,6 @@ class Attacker(nn.Module):
         self._reset_parameters()
 
     def _reset_parameters(self):
-        my_init.default_init(self.attacker.weight)
         my_init.default_init(self.ctx_linear.weight)
         my_init.default_init(self.input_linear.weight)
 
